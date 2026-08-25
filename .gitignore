@@ -1,0 +1,23 @@
+# Entorno virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest
+.pytest_cache/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Logs
+logs/
+*.log
+
+

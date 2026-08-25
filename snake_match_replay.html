@@ -401,18 +401,31 @@
     </div>
   </div>
 
-  <details class="loader" id="loaderDetails">
-    <summary>Cargar otra partida (pegar un game_&lt;id&gt;.log)</summary>
-    <div class="loader-body">
-      <textarea class="logpaste" id="logPaste" placeholder="Pegá acá el contenido de tu archivo game_<id>.log..."></textarea>
-      <div class="loader-actions">
-        <button class="tbtn play" id="btnLoad">Cargar partida</button>
-        <button class="tbtn" id="btnReset">Volver a la última partida</button>
-        <span class="loader-msg" id="loaderMsg"></span>
-      </div>
-    </div>
-  </details>
+<details class="loader" id="loaderDetails">
+  <summary>Cargar otra partida</summary>
 
+  <div class="loader-body">
+
+    <input
+      type="file"
+      id="logFile"
+      accept=".log,text/plain"
+    >
+
+    <textarea
+      class="logpaste"
+      id="logPaste"
+      placeholder="O pegá acá el contenido de tu archivo game_<id>.log..."
+    ></textarea>
+
+    <div class="loader-actions">
+      <button class="tbtn play" id="btnLoad">Cargar partida</button>
+      <button class="tbtn" id="btnReset">Volver a la partida incluida</button>
+      <span class="loader-msg" id="loaderMsg"></span>
+    </div>
+
+  </div>
+</details>
 </div>
 
 <script>
@@ -673,16 +686,54 @@ el('btnPlay').onclick = () => { PLAYING ? stopPlay() : startPlay(); };
 el('speed').onchange = () => { if (PLAYING) startPlay(); };
 el('scrub').oninput = (e) => { stopPlay(); goto(parseInt(e.target.value, 10)); };
 
-el('btnLoad').onclick = () => {
-  const text = el('logPaste').value;
+el('btnLoad').onclick = async () => {
+  const fileInput = el('logFile');
+  const textarea = el('logPaste');
   const msg = el('loaderMsg');
-  if (!text.trim()) { msg.textContent = 'Pegá el contenido de un log primero.'; msg.className = 'loader-msg err'; return; }
+
+  let text = '';
+
+  if (fileInput.files.length > 0) {
+    try {
+      text = await fileInput.files[0].text();
+    } catch (e) {
+      msg.textContent = 'No se pudo leer el archivo.';
+      msg.className = 'loader-msg err';
+      return;
+    }
+  } else {
+    text = textarea.value;
+  }
+
+  if (!text.trim()) {
+    msg.textContent = 'Seleccioná un .log o pegá su contenido primero.';
+    msg.className = 'loader-msg err';
+    return;
+  }
+
   const frames = parseLog(text);
-  if (!frames.length) { msg.textContent = 'No se reconocieron turnos en ese texto.'; msg.className = 'loader-msg err'; return; }
+
+  if (!frames.length) {
+    msg.textContent = 'No se reconocieron turnos en ese log.';
+    msg.className = 'loader-msg err';
+    return;
+  }
+
   stopPlay();
+
   const ok = loadFrames(frames);
-  msg.textContent = ok ? `Cargados ${frames.length} turnos correctamente.` : 'No se pudo cargar la partida.';
-  msg.className = ok ? 'loader-msg ok' : 'loader-msg err';
+
+  if (ok) {
+    const filename = fileInput.files.length
+      ? fileInput.files[0].name
+      : 'texto pegado';
+
+    msg.textContent = `Cargados ${frames.length} turnos — ${filename}`;
+    msg.className = 'loader-msg ok';
+  } else {
+    msg.textContent = 'No se pudo cargar la partida.';
+    msg.className = 'loader-msg err';
+  }
 };
 el('btnReset').onclick = () => {
   stopPlay();

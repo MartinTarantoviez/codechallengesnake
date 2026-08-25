@@ -1,2 +1,5 @@
 websockets==12.0
-xenon==0.1.0
+xenon==0.9.3
+websockets
+pytest
+pytest-cov
