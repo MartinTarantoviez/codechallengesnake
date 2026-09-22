@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Run codechallenge-test-client: a websocket bot that connects to the local
-# server (ws://localhost:5000/ws) and auto-plays challenges.
+# Run the Snake CodeChallenge bot (OOP refactor): connects over websocket
+# and auto-plays challenges.
 #
-# Usage: ./start.sh <auth_token>
+# Usage: ./start.sh <auth_token> [extra args, e.g. --board]
 #   <auth_token> is your Bot token from the web app (auth_app Bot.token).
-#   Requires the server to be up (codechallenge-server on :5000).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -18,15 +17,13 @@ fi
 source .venv/bin/activate
 
 if [ "$#" -lt 1 ]; then
-    echo "Usage: ./start.sh <auth_token>" >&2
+    echo "Usage: ./start.sh <auth_token> [extra args]" >&2
     echo "  Get the token from the web app (your Bot's token)." >&2
     echo "  https://codechallenge.up.railway.app/mybots " >&2
     exit 1
 fi
 
-# run async
-# exec python run.py "$1"
-# run sync
-# python run.py "$1"
+TOKEN="$1"
+shift  # remaining args (e.g. --board, --local) get forwarded through
 
-python run.py "$1"
+python -m snake.main "$TOKEN" "$@"

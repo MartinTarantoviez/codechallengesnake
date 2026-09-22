@@ -1,23 +1,8 @@
-# Entorno virtual
-.venv/
-venv/
-env/
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Pytest
-.pytest_cache/
-
-# Coverage
-.coverage
-.coverage.*
-htmlcov/
-
-# Logs
 logs/
+.venv/
+__pycache__/
+*.pyc
+.coverage
+.pytest_cache/
 *.log
-
-
+CLAUDE.md
