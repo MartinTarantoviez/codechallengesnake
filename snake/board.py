@@ -13,6 +13,14 @@ Rule history (see docs/RULES.md for the full source):
       and permanently bumps a per-player score multiplier (x2, then x3,
       ...) that applies ONLY to food points (not the +50 itself, not the
       per-move +1, not penalties). Does not grow the snake.
+  v5 (23 Sep 2026): a single '#' wall (a straight line, odd length up to
+      11) appears on the board at a time, placed on empty cells. Running
+      your head into it is a -500 penalty and your snake does not move
+      that turn -- it is not fatal, the game continues. The wall shrinks
+      one cell off each end after both players have moved (11->9->...->1
+      ->gone), then a new one appears elsewhere. There's no separate
+      field for it -- it's read straight off the board like everything
+      else here.
 
 This module stays legacy-compatible: a board with only '*' still parses
 and plays fine (target_digit is simply None, meaning "any food cell is
@@ -24,6 +32,7 @@ from .digits import next_target_digit
 EMPTY = ' '
 LEGACY_FOOD = '*'
 PICKUP = 'X'
+WALL = '#'
 DIGITS = set('123456789')
 
 
@@ -59,9 +68,9 @@ def parse_grid(board_str, rows, cols):
     return grid[:rows]
 
 
-def _classify_special_char(ch, pos, food, pickups):
-    """Handles '*' / a food digit / 'X' / empty space. Returns True if
-    the character was one of those (nothing left for the caller to do)."""
+def _classify_food_char(ch, pos, food):
+    """Handles '*' / a food digit / empty space. Returns True if the
+    character was one of those."""
     if ch == EMPTY:
         return True
     if ch == LEGACY_FOOD:
@@ -70,10 +79,26 @@ def _classify_special_char(ch, pos, food, pickups):
     if ch in DIGITS:
         food[pos] = int(ch)
         return True
+    return False
+
+
+def _classify_marker_char(ch, pos, pickups, walls):
+    """Handles 'X' / '#'. Returns True if the character was one of those."""
     if ch == PICKUP:
         pickups.append(pos)
         return True
+    if ch == WALL:
+        walls.append(pos)
+        return True
     return False
+
+
+def _classify_special_char(ch, pos, food, pickups, walls):
+    """Handles '*' / a food digit / 'X' / '#' / empty space. Returns True
+    if the character was one of those (nothing left for the caller to do)."""
+    if _classify_food_char(ch, pos, food):
+        return True
+    return _classify_marker_char(ch, pos, pickups, walls)
 
 
 def _classify_snake_char(ch, pos, heads, bodies):
@@ -83,34 +108,35 @@ def _classify_snake_char(ch, pos, heads, bodies):
         bodies.setdefault(ch, set()).add(pos)
 
 
-def _classify_cell(ch, pos, food, pickups, heads, bodies):
-    if _classify_special_char(ch, pos, food, pickups):
+def _classify_cell(ch, pos, food, pickups, walls, heads, bodies):
+    if _classify_special_char(ch, pos, food, pickups, walls):
         return
     _classify_snake_char(ch, pos, heads, bodies)
 
 
 class Board:
     """Immutable snapshot of one turn's grid, already classified into
-    heads / bodies (unordered at this stage) / food / pickups."""
+    heads / bodies (unordered at this stage) / food / pickups / walls."""
 
-    __slots__ = ('rows', 'cols', 'heads', 'bodies', 'food', 'pickups')
+    __slots__ = ('rows', 'cols', 'heads', 'bodies', 'food', 'pickups', 'walls')
 
-    def __init__(self, rows, cols, heads, bodies, food, pickups):
+    def __init__(self, rows, cols, heads, bodies, food, pickups, walls=()):
         self.rows = rows
         self.cols = cols
         self.heads = heads      # {'A': (r,c), 'B': (r,c)}
         self.bodies = bodies    # {'a': {(r,c), ...}, 'b': {...}} -- UNORDERED
         self.food = food        # {(r,c): digit_or_None}
         self.pickups = pickups  # [(r,c), ...]
+        self.walls = walls      # [(r,c), ...] -- the current '#' hazard, if any
 
     @classmethod
     def from_turn(cls, board_str, rows, cols):
         grid = parse_grid(board_str, rows, cols)
-        food, pickups, heads, bodies = {}, [], {}, {}
+        food, pickups, walls, heads, bodies = {}, [], [], {}, {}
         for r in range(rows):
             for c in range(cols):
-                _classify_cell(grid[r][c], (r, c), food, pickups, heads, bodies)
-        return cls(rows, cols, heads, bodies, food, pickups)
+                _classify_cell(grid[r][c], (r, c), food, pickups, walls, heads, bodies)
+        return cls(rows, cols, heads, bodies, food, pickups, walls)
 
     def in_bounds(self, pos):
         r, c = pos

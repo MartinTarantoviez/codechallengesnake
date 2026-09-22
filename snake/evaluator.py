@@ -108,7 +108,7 @@ class Evaluator:
     def _territory_and_distances(self, state, my_head, opp_head):
         my_body = state.bodies.get(self.me.lower(), [])
         opp_body = state.bodies.get(self.opp.lower(), [])
-        walls = walls_for(my_body, opp_body)
+        walls = walls_for(my_body, opp_body, state.walls)
         my_t, opp_t, dist_me, dist_opp = voronoi_territory(
             my_head, opp_head, walls, state.rows, state.cols
         )

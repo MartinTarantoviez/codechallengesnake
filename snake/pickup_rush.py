@@ -69,7 +69,7 @@ class PickupPlanner:
             return None
         opp_head = state.heads.get(self.opp)
         walls = walls_for(state.bodies.get(self.me.lower(), []),
-                           state.bodies.get(self.opp.lower(), []))
+                           state.bodies.get(self.opp.lower(), []), state.walls)
         dist_me = bfs_distances(my_head, walls, state.rows, state.cols)
         dist_opp = bfs_distances(opp_head, walls, state.rows, state.cols) if opp_head else {}
         horizon = state.remaining_moves if state.remaining_moves is not None else 200
@@ -77,7 +77,7 @@ class PickupPlanner:
 
     def _step_toward(self, state, target, legal_moves):
         obstacles = walls_for(state.bodies.get(self.me.lower(), []),
-                               state.bodies.get(self.opp.lower(), []))
+                               state.bodies.get(self.opp.lower(), []), state.walls)
         obstacles = obstacles | _wrong_digit_cells(state)
         dist_from_target = bfs_distances(target, obstacles, state.rows, state.cols)
 

@@ -13,6 +13,9 @@ Scoring assumptions encoded here (from the rules PDF):
     NOT grow the snake (explicitly stated in the rules).
   - Multiplier applies only to food points, never to the +50, the +1
     per move, or the -500 penalty.
+  - '#' wall: running into one is a -500 penalty and the snake does not
+    move at all that turn (not fatal, unlike every other collision --
+    see board.py's module docstring for the full v5 rule).
 
 DIRECTIONS / in_bounds / neighbors4 live in board.py; this module only
 adds the *dynamic* (turn-to-turn) pieces: ordering, simulation, reward.
@@ -29,6 +32,7 @@ DIRECTIONS = {
 }
 
 WRONG_DIGIT_PENALTY = -500.0
+WALL_PENALTY = -500.0
 PICKUP_SCORE = 50.0
 CORRECT_DIGIT_UNIT = 100.0
 
@@ -67,11 +71,12 @@ class GameState:
     bodies: {'a': [ordered neck..tail], 'b': [...]}
     food: {(r,c): digit_or_None}
     pickups: [(r,c), ...]
+    walls: {(r,c), ...}  -- the current '#' hazard, if any
     multipliers: {'A': int, 'B': int}  -- starts at 1 each
     """
 
     def __init__(self, rows, cols, heads, bodies, food, pickups,
-                 multipliers=None, remaining_moves=None):
+                 multipliers=None, remaining_moves=None, walls=None):
         self.rows = rows
         self.cols = cols
         self.heads = heads
@@ -80,6 +85,7 @@ class GameState:
         self.pickups = pickups
         self.multipliers = multipliers or {'A': 1, 'B': 1}
         self.remaining_moves = remaining_moves
+        self.walls = walls if walls is not None else frozenset()
 
     @classmethod
     def from_board(cls, board, prev_heads=None, multipliers=None,
@@ -87,7 +93,7 @@ class GameState:
         ordered_bodies = BodyOrderer.order_all(board.heads, board.bodies, prev_heads)
         return cls(board.rows, board.cols, dict(board.heads), ordered_bodies,
                     dict(board.food), list(board.pickups),
-                    multipliers, remaining_moves)
+                    multipliers, remaining_moves, set(board.walls))
 
     def in_bounds(self, pos):
         r, c = pos
@@ -139,6 +145,10 @@ class GameState:
         (new_state, reward) where reward is the real-scoring points
         this single move earns (already multiplier-adjusted for food),
         or (None, 0.0) if the move is immediately fatal.
+
+        Running into a '#' wall is neither: it's a flat penalty and the
+        whole snake stays exactly where it was, so the unchanged state
+        (self) is returned rather than a new one.
         """
         head = self.heads.get(head_letter)
         if head is None:
@@ -146,7 +156,11 @@ class GameState:
         new_head = _step(head, direction)
         if not self.in_bounds(new_head):
             return None, 0.0
+        if new_head in self.walls:
+            return self, WALL_PENALTY
+        return self._advance(head_letter, other_letter, head, new_head, my_multiplier)
 
+    def _advance(self, head_letter, other_letter, head, new_head, my_multiplier):
         body_letter = head_letter.lower()
         my_body = self.bodies.get(body_letter, [])
         other_body = self.bodies.get(other_letter.lower(), [])
@@ -172,7 +186,7 @@ class GameState:
 
         new_state = GameState(
             self.rows, self.cols, new_heads, new_bodies, new_food,
-            new_pickups, new_multipliers, self.remaining_moves,
+            new_pickups, new_multipliers, self.remaining_moves, self.walls,
         )
         return new_state, reward
 

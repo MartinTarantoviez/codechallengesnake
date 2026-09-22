@@ -43,6 +43,21 @@ def test_pickup_parsed_separately_from_food():
     print('test_pickup_parsed_separately_from_food: OK')
 
 
+def test_wall_parsed_separately_from_everything_else():
+    board_str = "|A ## |\n|    |\n|    |\n|    |"
+    b = _mk(board_str, 4, 5)
+    assert b.walls == [(0, 2), (0, 3)]
+    assert (0, 2) not in b.food and (0, 2) not in b.pickups
+    print('test_wall_parsed_separately_from_everything_else: OK')
+
+
+def test_board_without_a_wall_has_empty_walls():
+    board_str = "|A   |\n|    |\n|    |\n|    |"
+    b = _mk(board_str, 4, 5)
+    assert b.walls == []
+    print('test_board_without_a_wall_has_empty_walls: OK')
+
+
 def test_heads_and_bodies_parsed():
     board_str = "|Aab |\n|    |\n|    |\n|   B|"
     b = _mk(board_str, 4, 4)
@@ -57,5 +72,7 @@ if __name__ == '__main__':
     test_digits_parsed_and_target_is_cyclic_gap()
     test_digits_simple_ascending_window()
     test_pickup_parsed_separately_from_food()
+    test_wall_parsed_separately_from_everything_else()
+    test_board_without_a_wall_has_empty_walls()
     test_heads_and_bodies_parsed()
     print('ALL BOARD TESTS PASSED')

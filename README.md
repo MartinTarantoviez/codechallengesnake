@@ -30,8 +30,8 @@ Flags:
 ```
 snake/
   board.py       Board: parses the raw board string into heads/bodies/
-                 food/pickups. Knows the v3 cyclic "next correct digit"
-                 rule (via digits.py).
+                 food/pickups/walls. Knows the v3 cyclic "next correct
+                 digit" rule (via digits.py).
   digits.py      The v3 cyclic "next correct digit" rule in one place,
                  shared by Board and GameState so it's never duplicated.
   ordering.py    BodyOrderer: turns each snake's unordered body cells
@@ -109,8 +109,8 @@ never hardcode 15.
 ### Food and scoring (current rules, see `docs` link below for the source)
 
 - Surviving a move: **+1**.
-- Crashing into a wall, your own body, or the opponent: **-500**, ends
-  the game, opponent gets **+1000**.
+- Crashing into the board edge, your own body, or the opponent:
+  **-500**, ends the game, opponent gets **+1000**.
 - Food is five digits `1`-`9` on the board at once, eaten in ascending
   **cyclic** order (`...,8,9,1,2,...`, no `0`). Eating the correct next
   digit grows you and scores `digit * 100 * your_multiplier`. Eating
@@ -120,13 +120,22 @@ never hardcode 15.
   multiplier (`x2`, then `x3`, ...). The multiplier only applies to
   food points -- not the `+50` itself, not the per-move `+1`, not
   penalties. `X` does **not** grow your snake.
+- A single `#` **wall** (v5, since 23 Sep 2026) can be on the board at
+  a time: a straight line, odd length up to 11, placed on empty cells.
+  Running your head into it is a **-500 penalty** and your snake
+  **does not move** that turn -- unlike every other collision, this is
+  *not* fatal, the game just continues. After both players have moved,
+  the wall shrinks one cell off each end (`11 -> 9 -> 7 -> ... -> 1 ->
+  gone`), then a new one appears elsewhere at random. There's no
+  separate field for it -- read the `#` cells straight off the board,
+  same as everything else.
 - `turn_data` includes `board_size` (`"15x18"`), and from the
   multiplier rule on, `multiplier_1`/`multiplier_2`.
 
 Full source: the challenge's own `/how-to-play` page (ask whoever set
 up your bot token for the current URL -- it's the canonical source and
 gets updated when rules change; this README mirrors it as of the rules
-version in effect on 2026-09-21).
+version in effect on 2026-09-22).
 
 ### Open questions / assumptions worth re-checking
 

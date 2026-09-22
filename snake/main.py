@@ -4,7 +4,7 @@ import asyncio
 from .bot import SnakeBot
 from .client import MatchClient
 
-BUILD = "2026-09-21.oop-v3v4-rules"
+BUILD = "2026-09-22.oop-v3v4v5-rules"
 
 PROD_URI = "wss://server.codechallenge.net.ar/ws?token={}"
 LOCAL_URI = "ws://localhost:5000/ws?token={}"

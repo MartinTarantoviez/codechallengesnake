@@ -8,11 +8,11 @@ from snake.strategy import SnakeStrategy, Evaluator
 
 
 def _empty_state(rows=10, cols=10, heads=None, food=None, pickups=None,
-                  multipliers=None):
+                  multipliers=None, walls=None):
     heads = heads or {'A': (5, 5), 'B': (0, 0)}
     return GameState(rows, cols, heads, bodies={'a': [], 'b': []},
                       food=food or {}, pickups=pickups or [],
-                      multipliers=multipliers or {'A': 1, 'B': 1})
+                      multipliers=multipliers or {'A': 1, 'B': 1}, walls=walls)
 
 
 def test_simulate_correct_digit_grows_and_scores():
@@ -52,6 +52,36 @@ def test_multiplier_scales_correct_digit_reward_only():
     _new_state, reward = state.simulate('A', 'B', 'right')
     assert reward == 9 * 100 * 3
     print('test_multiplier_scales_correct_digit_reward_only: OK')
+
+
+def test_simulate_wall_penalizes_and_snake_stays_put():
+    state = _empty_state(walls={(5, 6)})
+    new_state, reward = state.simulate('A', 'B', 'right')
+    assert reward == -500.0
+    assert new_state is state  # the whole snake stays exactly where it was
+    assert new_state.heads['A'] == (5, 5)
+    print('test_simulate_wall_penalizes_and_snake_stays_put: OK')
+
+
+def test_wall_carries_over_into_the_next_simulated_state():
+    # A move that doesn't touch the wall must still hand it down to the
+    # resulting state, so the opponent's simulated reply (2-ply search)
+    # sees it too instead of the wall silently vanishing after one step.
+    state = _empty_state(walls={(5, 6)})
+    new_state, _reward = state.simulate('A', 'B', 'up')  # moves away, doesn't hit it
+    assert new_state.walls == {(5, 6)}
+    print('test_wall_carries_over_into_the_next_simulated_state: OK')
+
+
+def test_bot_avoids_wall_when_a_safe_alternative_exists():
+    # Boxed so 'right' walks into the wall and 'up' is a clean escape.
+    heads = {'A': (5, 5), 'B': (0, 0)}
+    state = GameState(11, 11, heads, {'a': [], 'b': []}, {}, [],
+                       walls={(5, 6)})
+    strategy = SnakeStrategy('A', 'B')
+    direction = strategy.choose_direction(state)
+    assert direction != 'right', "should not walk into the wall when a safer move exists"
+    print('test_bot_avoids_wall_when_a_safe_alternative_exists: OK')
 
 
 def test_bot_prefers_correct_digit_over_wrong_digit_when_both_reachable():
@@ -97,6 +127,9 @@ if __name__ == '__main__':
     test_simulate_wrong_digit_penalizes_but_survives()
     test_simulate_pickup_scores_flat_and_bumps_multiplier_no_growth()
     test_multiplier_scales_correct_digit_reward_only()
+    test_simulate_wall_penalizes_and_snake_stays_put()
+    test_wall_carries_over_into_the_next_simulated_state()
+    test_bot_avoids_wall_when_a_safe_alternative_exists()
     test_bot_prefers_correct_digit_over_wrong_digit_when_both_reachable()
     test_bot_avoids_wrong_digit_when_a_safe_alternative_exists()
     test_evaluator_scores_target_digit_higher_with_bigger_multiplier()

@@ -79,6 +79,20 @@ def test_step_toward_routes_around_wrong_digit():
     print('test_step_toward_routes_around_wrong_digit: OK')
 
 
+def test_step_toward_routes_around_board_wall():
+    # Same shape as the wrong-digit case above, but with a '#' wall
+    # instead: stepping into it bounces (no real progress), so the
+    # route must detour around it rather than treating it as a normal,
+    # if costly, step.
+    state = GameState(5, 5, {'A': (0, 0), 'B': (4, 4)}, {'a': [], 'b': []},
+                       {}, [(0, 4)], walls={(0, 1)}, remaining_moves=200)
+    planner = PickupPlanner('A', 'B')
+    legal_moves = state.legal_moves('A', 'B')
+    step = planner._step_toward(state, (0, 4), legal_moves)
+    assert step != 'right', "should route around the wall, not bounce off it"
+    print('test_step_toward_routes_around_board_wall: OK')
+
+
 def test_step_toward_none_when_target_unreachable():
     # pickup sealed off entirely by opponent's body -> no route exists.
     state = GameState(5, 5, {'A': (0, 0), 'B': (4, 4)}, {'a': [], 'b': [(0, 1), (1, 0)]},
@@ -189,6 +203,7 @@ if __name__ == '__main__':
     test_pickup_target_skips_pickup_with_zero_opportunity()
     test_pickup_target_no_opponent_head_still_works()
     test_step_toward_routes_around_wrong_digit()
+    test_step_toward_routes_around_board_wall()
     test_step_toward_none_when_target_unreachable()
     test_suggest_returns_none_without_a_target()
     test_suggest_returns_none_when_target_exists_but_unroutable()

@@ -54,10 +54,12 @@ def voronoi_territory(my_head, opp_head, walls, rows, cols):
     return my_territory, opp_territory, dist_me, dist_opp
 
 
-def walls_for(my_body, opp_body):
-    """Solid cells for BFS purposes: both bodies, minus each snake's own
-    tail (which vacates on a non-growing move)."""
-    walls = set(my_body) | set(opp_body)
+def walls_for(my_body, opp_body, board_walls=()):
+    """Solid cells for BFS purposes: both bodies plus any '#' board
+    hazard (stepping onto one never actually gets you there -- the move
+    bounces -- so it's as impassable as a body cell for path-planning),
+    minus each snake's own tail (which vacates on a non-growing move)."""
+    walls = set(my_body) | set(opp_body) | set(board_walls)
     walls.discard(tail_of(my_body))
     walls.discard(tail_of(opp_body))
     walls.discard(None)
