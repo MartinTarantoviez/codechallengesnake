@@ -23,35 +23,42 @@ def test_tail_basic():
     print('test_tail_basic: OK')
 
 
-def test_regression_game_4d70dada():
-    # The exact ambiguous shape that used to kill the bot for real: body
-    # {(6,6),(7,6),(7,7)}, head (6,7). Both (6,6) and (7,7) touch the
-    # head. With the true previous head known, this must resolve
-    # correctly (neck=(6,6), tail=(7,7)) and reject moving into the neck.
-    head = (6, 7)
-    body = {(6, 6), (7, 6), (7, 7)}
+# The exact ambiguous shape that used to kill the bot for real: body
+# {(6,6),(7,6),(7,7)}, head (6,7). Both (6,6) and (7,7) touch the head.
+_AMBIGUOUS_COIL_HEAD = (6, 7)
+_AMBIGUOUS_COIL_BODY = {(6, 6), (7, 6), (7, 7)}
 
-    ordered = order_body_from_neck((6, 6), body)
-    assert ordered == [(6, 6), (7, 6), (7, 7)]
-    assert tail_of(ordered) == (7, 7)
 
-    bodies = BodyOrderer.order_all(
-        heads={'A': head, 'B': (9, 8)},
-        bodies={'a': body, 'b': {(10, 7), (10, 8)}},
+def _ambiguous_coil_bodies():
+    return BodyOrderer.order_all(
+        heads={'A': _AMBIGUOUS_COIL_HEAD, 'B': (9, 8)},
+        bodies={'a': _AMBIGUOUS_COIL_BODY, 'b': {(10, 7), (10, 8)}},
         prev_heads={'A': (6, 6), 'B': (9, 9)},
     )
-    assert bodies['a'] == [(6, 6), (7, 6), (7, 7)]
 
-    state = GameState(15, 15, {'A': head, 'B': (9, 8)}, bodies,
+
+def test_regression_game_4d70dada_orders_the_ambiguous_coil_correctly():
+    # With the true previous head known, this must resolve correctly
+    # (neck=(6,6), tail=(7,7)), not guess the other way around.
+    ordered = order_body_from_neck((6, 6), _AMBIGUOUS_COIL_BODY)
+    assert ordered == [(6, 6), (7, 6), (7, 7)]
+    assert tail_of(ordered) == (7, 7)
+    assert _ambiguous_coil_bodies()['a'] == [(6, 6), (7, 6), (7, 7)]
+    print('test_regression_game_4d70dada_orders_the_ambiguous_coil_correctly: OK')
+
+
+def test_regression_game_4d70dada_rejects_moving_into_the_neck():
+    bodies = _ambiguous_coil_bodies()
+    state = GameState(15, 15, {'A': _AMBIGUOUS_COIL_HEAD, 'B': (9, 8)}, bodies,
                        food={}, pickups=[])
     new_state, reward = state.simulate('A', 'B', 'left')
     # v7: no longer illegal/fatal, but it must still be correctly
     # recognized as a crash into the neck (reward -500, stays put) --
     # not a free, legal shift as a wrong tail guess would wrongly allow.
     assert new_state is not None and reward == -500.0
-    assert new_state.heads['A'] == head, \
+    assert new_state.heads['A'] == _AMBIGUOUS_COIL_HEAD, \
         "moving into the neck should crash (stay put), but wasn't recognized as one"
-    print('test_regression_game_4d70dada: OK')
+    print('test_regression_game_4d70dada_rejects_moving_into_the_neck: OK')
 
 
 def test_order_bodies_no_history_falls_back():
@@ -67,6 +74,7 @@ def test_order_bodies_no_history_falls_back():
 
 if __name__ == '__main__':
     test_tail_basic()
-    test_regression_game_4d70dada()
+    test_regression_game_4d70dada_orders_the_ambiguous_coil_correctly()
+    test_regression_game_4d70dada_rejects_moving_into_the_neck()
     test_order_bodies_no_history_falls_back()
     print('ALL ORDERING TESTS PASSED')

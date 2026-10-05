@@ -120,11 +120,15 @@ def test_board_empty_board():
           b.heads == {} and b.bodies == {} and b.food == {} and b.pickups == [])
 
 
-def test_in_bounds():
-    check('test_in_bounds',
+def test_in_bounds_true_for_corners_inside_the_grid():
+    check('test_in_bounds_true_for_corners_inside_the_grid',
           in_bounds((0, 0), 5, 5) is True
-          and in_bounds((4, 4), 5, 5) is True
-          and in_bounds((-1, 0), 5, 5) is False
+          and in_bounds((4, 4), 5, 5) is True)
+
+
+def test_in_bounds_false_past_every_edge():
+    check('test_in_bounds_false_past_every_edge',
+          in_bounds((-1, 0), 5, 5) is False
           and in_bounds((0, -1), 5, 5) is False
           and in_bounds((5, 0), 5, 5) is False
           and in_bounds((0, 5), 5, 5) is False)
@@ -563,7 +567,8 @@ ALL_TESTS = [
     test_board_classifies_all_cell_types_legacy_star,
     test_board_ignores_unknown_chars_but_now_picks_up_digits_as_food,
     test_board_empty_board,
-    test_in_bounds,
+    test_in_bounds_true_for_corners_inside_the_grid,
+    test_in_bounds_false_past_every_edge,
     test_neighbors4,
     test_order_body_heuristic_empty_body,
     test_order_body_heuristic_straight_line,

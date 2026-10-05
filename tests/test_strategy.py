@@ -37,15 +37,21 @@ def test_simulate_wrong_digit_penalizes_but_survives():
     print('test_simulate_wrong_digit_penalizes_but_survives: OK')
 
 
-def test_simulate_pickup_scores_flat_and_bumps_multiplier_no_growth():
+def test_simulate_pickup_scores_flat_and_bumps_multiplier():
     state = _empty_state(pickups=[(5, 6)])
     new_state, reward = state.simulate('A', 'B', 'right')
     assert new_state is not None
     assert reward == 50.0
     assert new_state.multipliers['A'] == 2
+    print('test_simulate_pickup_scores_flat_and_bumps_multiplier: OK')
+
+
+def test_simulate_pickup_does_not_grow_and_is_removed():
+    state = _empty_state(pickups=[(5, 6)])
+    new_state, _reward = state.simulate('A', 'B', 'right')
     assert new_state.bodies['a'] == []  # X does not grow the snake
     assert (5, 6) not in new_state.pickups
-    print('test_simulate_pickup_scores_flat_and_bumps_multiplier_no_growth: OK')
+    print('test_simulate_pickup_does_not_grow_and_is_removed: OK')
 
 
 def test_multiplier_scales_correct_digit_reward_only():
@@ -210,7 +216,8 @@ def test_evaluator_pulls_toward_own_reachable_tail_food():
 if __name__ == '__main__':
     test_simulate_correct_digit_grows_and_scores()
     test_simulate_wrong_digit_penalizes_but_survives()
-    test_simulate_pickup_scores_flat_and_bumps_multiplier_no_growth()
+    test_simulate_pickup_scores_flat_and_bumps_multiplier()
+    test_simulate_pickup_does_not_grow_and_is_removed()
     test_multiplier_scales_correct_digit_reward_only()
     test_simulate_eats_own_tail_food_grows_and_scores()
     test_simulate_steps_on_others_tail_food_just_clears_it()
