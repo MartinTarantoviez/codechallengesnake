@@ -58,6 +58,24 @@ def test_board_without_a_wall_has_empty_walls():
     print('test_board_without_a_wall_has_empty_walls: OK')
 
 
+def test_tail_food_parsed_and_not_mistaken_for_a_snake_head():
+    # The circled letters are NOT ascii uppercase, but Python's
+    # str.isupper() is True for them too -- this must be classified as
+    # tail food, never as a third snake head.
+    board_str = "|AⒶ|\n|Ⓑ |"
+    b = _mk(board_str, 2, 2)
+    assert b.tail_food == {(0, 1): 'A', (1, 0): 'B'}
+    assert b.heads == {'A': (0, 0)}
+    print('test_tail_food_parsed_and_not_mistaken_for_a_snake_head: OK')
+
+
+def test_board_without_tail_food_has_empty_dict():
+    board_str = "|A |\n|  |"
+    b = _mk(board_str, 2, 2)
+    assert b.tail_food == {}
+    print('test_board_without_tail_food_has_empty_dict: OK')
+
+
 def test_heads_and_bodies_parsed():
     board_str = "|Aab |\n|    |\n|    |\n|   B|"
     b = _mk(board_str, 4, 4)
@@ -74,5 +92,7 @@ if __name__ == '__main__':
     test_pickup_parsed_separately_from_food()
     test_wall_parsed_separately_from_everything_else()
     test_board_without_a_wall_has_empty_walls()
+    test_tail_food_parsed_and_not_mistaken_for_a_snake_head()
+    test_board_without_tail_food_has_empty_dict()
     test_heads_and_bodies_parsed()
     print('ALL BOARD TESTS PASSED')

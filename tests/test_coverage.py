@@ -102,10 +102,13 @@ def test_board_classifies_all_cell_types_legacy_star():
 
 
 def test_board_ignores_unknown_chars_but_now_picks_up_digits_as_food():
-    # '#' is genuinely unknown -> ignored. '7' used to be "ignored" in
-    # the pre-v3 test, but digits are now real food (v3 rule) -> must be
-    # picked up as food[pos] == 7, not silently dropped.
-    b = Board.from_turn("|#A|\n|7 |", 2, 2)
+    # '?' is genuinely unknown -> ignored ('#' used to be this example,
+    # but it's a real wall hazard since v5, not an unknown char anymore
+    # -- see test_wall_parsed_separately_from_everything_else in
+    # test_board.py). '7' used to be "ignored" in the pre-v3 test, but
+    # digits are now real food (v3 rule) -> must be picked up as
+    # food[pos] == 7, not silently dropped.
+    b = Board.from_turn("|?A|\n|7 |", 2, 2)
     check('test_board_ignores_unknown_chars_but_now_picks_up_digits_as_food',
           b.heads == {'A': (0, 1)} and b.bodies == {}
           and b.food == {(1, 0): 7})
@@ -290,9 +293,13 @@ def _state(me_head, me_body, opp_head=None, opp_body=None, food=None,
     return GameState(rows, cols, heads, bodies, food_dict, [])
 
 
-def test_simulate_out_of_bounds_returns_none():
-    new_state, _r = _state((0, 0), []).simulate('A', 'B', 'up')
-    check('test_simulate_out_of_bounds_returns_none', new_state is None)
+def test_simulate_out_of_bounds_is_a_crash_not_fatal():
+    # v7: crashing into the board edge no longer ends the game -- the
+    # snake stays exactly where it was and takes the flat crash penalty.
+    new_state, reward = _state((0, 0), []).simulate('A', 'B', 'up')
+    check('test_simulate_out_of_bounds_is_a_crash_not_fatal',
+          new_state is not None and reward == -500.0
+          and new_state.heads['A'] == (0, 0))
 
 
 def test_simulate_missing_head_returns_none():
@@ -301,9 +308,23 @@ def test_simulate_missing_head_returns_none():
     check('test_simulate_missing_head_returns_none', new_state is None)
 
 
-def test_simulate_into_own_body_is_fatal():
-    new_state, _r = _state((2, 2), [(1, 2), (0, 2)]).simulate('A', 'B', 'up')
-    check('test_simulate_into_own_body_is_fatal', new_state is None)
+def test_simulate_into_own_body_is_a_crash_that_sheds_the_tail():
+    # body (1,2)/(0,2) is longer than head+2, so the crash sheds down to
+    # head + first 2 segments and turns the rest into tail food for B.
+    state = _state((2, 2), [(1, 2), (0, 2), (0, 1), (0, 0)])
+    new_state, reward = state.simulate('A', 'B', 'up')
+    check('test_simulate_into_own_body_is_a_crash_that_sheds_the_tail',
+          new_state is not None and reward == -500.0
+          and new_state.heads['A'] == (2, 2)
+          and new_state.bodies['a'] == [(1, 2), (0, 2)]
+          and new_state.tail_food == {(0, 1): 'B', (0, 0): 'B'})
+
+
+def test_simulate_crash_with_three_or_fewer_cells_sheds_nothing():
+    state = _state((2, 2), [(1, 2), (0, 2)])
+    new_state, _r = state.simulate('A', 'B', 'up')
+    check('test_simulate_crash_with_three_or_fewer_cells_sheds_nothing',
+          new_state.bodies['a'] == [(1, 2), (0, 2)] and new_state.tail_food == {})
 
 
 def test_simulate_into_own_tail_without_eating_is_legal():
@@ -324,14 +345,16 @@ def test_simulate_growing_into_own_tail_cell_is_also_legal():
           and new_state.bodies['a'] == [(2, 2), (2, 3), (1, 3), (1, 2)])
 
 
-def test_simulate_head_on_collision_with_opponent_head_is_fatal():
-    new_state, _r = _state((2, 2), [], opp_head=(1, 2), opp_body=[]).simulate('A', 'B', 'up')
-    check('test_simulate_head_on_collision_with_opponent_head_is_fatal', new_state is None)
+def test_simulate_head_on_collision_with_opponent_head_is_a_crash():
+    new_state, reward = _state((2, 2), [], opp_head=(1, 2), opp_body=[]).simulate('A', 'B', 'up')
+    check('test_simulate_head_on_collision_with_opponent_head_is_a_crash',
+          new_state is not None and reward == -500.0 and new_state.heads['A'] == (2, 2))
 
 
-def test_simulate_into_opponent_body_is_fatal():
-    new_state, _r = _state((2, 2), [], opp_head=(9, 9), opp_body=[(1, 2)]).simulate('A', 'B', 'up')
-    check('test_simulate_into_opponent_body_is_fatal', new_state is None)
+def test_simulate_into_opponent_body_is_a_crash():
+    new_state, reward = _state((2, 2), [], opp_head=(9, 9), opp_body=[(1, 2)]).simulate('A', 'B', 'up')
+    check('test_simulate_into_opponent_body_is_a_crash',
+          new_state is not None and reward == -500.0 and new_state.heads['A'] == (2, 2))
 
 
 def test_simulate_eats_food_grows_and_removes_food():
@@ -350,16 +373,24 @@ def test_simulate_normal_shift_without_food():
           new_state.bodies['a'] == [(2, 2), (2, 1)])
 
 
-def test_legal_moves_filters_fatal_directions():
+def test_legal_moves_includes_crash_directions_since_v7():
+    # Crashing is survivable now, so legal_moves no longer excludes
+    # directions that bump into the opponent's body -- 'right' is the
+    # only one that *doesn't* crash, but all four still come back.
     state = _state((2, 2), [], opp_head=(9, 9), opp_body=[(1, 2), (3, 2), (2, 1)])
     dirs = {d for d, _s, _r in state.legal_moves('A', 'B')}
-    check('test_legal_moves_filters_fatal_directions', dirs == {'right'})
+    check('test_legal_moves_includes_crash_directions_since_v7', dirs == set(DIRECTIONS))
 
 
-def test_legal_moves_empty_when_fully_boxed_in():
+def test_legal_moves_never_empty_when_boxed_in_since_v7():
+    # Every direction from here is either off-board or into the
+    # opponent's body -- under v7 all four are survivable crashes, so
+    # the snake is never truly "trapped" with zero legal moves anymore
+    # (only a missing head produces that, see
+    # test_simulate_missing_head_returns_none).
     state = _state((0, 0), [], opp_body=[(-1, 0), (1, 0), (0, -1), (0, 1)])
     moves = state.legal_moves('A', 'B')
-    check('test_legal_moves_empty_when_fully_boxed_in', moves == [])
+    check('test_legal_moves_never_empty_when_boxed_in_since_v7', len(moves) == 4)
 
 
 # ---------------------------------------------------------------------------
@@ -459,14 +490,18 @@ def test_choose_direction_eats_adjacent_food_now_that_real_reward_counts():
           direction == 'right')
 
 
-def test_choose_direction_no_legal_moves_uses_fallback():
+def test_choose_direction_fully_boxed_in_still_picks_a_direction():
+    # Every direction from (0,0) crashes (off-board or into B's body),
+    # but since v7 that's survivable, not excluded -- all four score
+    # identically (same bounce, same resulting state), so this goes
+    # through the normal scored search (not the old _fallback_direction
+    # escape hatch) and ties are broken by DIRECTIONS dict order
+    # (up, down, left, right) -> 'up'.
     state = GameState(5, 5, {'A': (0, 0), 'B': (9, 9)},
                        {'a': [], 'b': [(-1, 0), (1, 0), (0, -1), (0, 1)]}, {}, [])
     direction = SnakeStrategy('A', 'B').choose_direction(state)
-    # only 'down'/'right' stay on-board from (0,0); DIRECTIONS dict order
-    # is up, down, left, right, and 'up' is off-board -> 'down' first.
-    check('test_choose_direction_no_legal_moves_uses_fallback',
-          direction in DIRECTIONS and direction == 'down')
+    check('test_choose_direction_fully_boxed_in_still_picks_a_direction',
+          direction == 'up')
 
 
 def test_choose_direction_traps_opponent_scores_inf_and_is_chosen():
@@ -550,17 +585,18 @@ ALL_TESTS = [
     test_bfs_distances_does_not_revisit,
     test_voronoi_territory_symmetric_split,
     test_voronoi_territory_no_opponent_head,
-    test_simulate_out_of_bounds_returns_none,
+    test_simulate_out_of_bounds_is_a_crash_not_fatal,
     test_simulate_missing_head_returns_none,
-    test_simulate_into_own_body_is_fatal,
+    test_simulate_into_own_body_is_a_crash_that_sheds_the_tail,
+    test_simulate_crash_with_three_or_fewer_cells_sheds_nothing,
     test_simulate_into_own_tail_without_eating_is_legal,
     test_simulate_growing_into_own_tail_cell_is_also_legal,
-    test_simulate_head_on_collision_with_opponent_head_is_fatal,
-    test_simulate_into_opponent_body_is_fatal,
+    test_simulate_head_on_collision_with_opponent_head_is_a_crash,
+    test_simulate_into_opponent_body_is_a_crash,
     test_simulate_eats_food_grows_and_removes_food,
     test_simulate_normal_shift_without_food,
-    test_legal_moves_filters_fatal_directions,
-    test_legal_moves_empty_when_fully_boxed_in,
+    test_legal_moves_includes_crash_directions_since_v7,
+    test_legal_moves_never_empty_when_boxed_in_since_v7,
     test_evaluate_missing_my_head_is_neg_inf,
     test_evaluate_missing_opp_head_is_pos_inf,
     test_evaluate_prefers_more_territory,
@@ -571,7 +607,7 @@ ALL_TESTS = [
     test_evaluate_exit_penalty_applies_when_boxed,
     test_choose_direction_moves_toward_reachable_food,
     test_choose_direction_eats_adjacent_food_now_that_real_reward_counts,
-    test_choose_direction_no_legal_moves_uses_fallback,
+    test_choose_direction_fully_boxed_in_still_picks_a_direction,
     test_choose_direction_traps_opponent_scores_inf_and_is_chosen,
     test_choose_direction_fallback_when_my_head_missing,
     test_choose_direction_prefers_move_that_does_not_shrink_territory,

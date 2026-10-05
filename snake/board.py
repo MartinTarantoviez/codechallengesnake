@@ -21,6 +21,20 @@ Rule history (see docs/RULES.md for the full source):
       ->gone), then a new one appears elsewhere. There's no separate
       field for it -- it's read straight off the board like everything
       else here.
+  v6 (30 Sep 2026): each of the five "window" digits now appears in
+      several copies (3-5) instead of a single cell. Eating the target
+      removes every copy of that digit at once (see GameState); wrong
+      copies still cost -500 each individually.
+  v7 (7 Oct 2026): crashing (own body, board edge, a '#' wall, or the
+      opponent) no longer ends the game -- see GameState.simulate for
+      the full consequence. The board can now also hold tail food, the
+      circled letters U+24B6 ('Ⓐ') / U+24B7 ('Ⓑ'), dropped by a
+      crashing snake and edible only by the side named on it (never by
+      the snake that shed it -- stepping on your own counts as a normal
+      move that just clears the cell). These are NOT ASCII uppercase
+      letters even though str.isupper() is True for them, so they must
+      be classified before the generic snake-head check or they'd be
+      mistaken for a third snake's head.
 
 This module stays legacy-compatible: a board with only '*' still parses
 and plays fine (target_digit is simply None, meaning "any food cell is
@@ -34,6 +48,7 @@ LEGACY_FOOD = '*'
 PICKUP = 'X'
 WALL = '#'
 DIGITS = set('123456789')
+TAIL_FOOD_OWNERS = {'Ⓐ': 'A', 'Ⓑ': 'B'}
 
 
 def _strip_pipes(line):
@@ -101,6 +116,17 @@ def _classify_special_char(ch, pos, food, pickups, walls):
     return _classify_marker_char(ch, pos, pickups, walls)
 
 
+def _classify_tail_food_char(ch, pos, tail_food):
+    """Handles the circled-letter tail food dropped by a crash. Must run
+    before _classify_snake_char: these are NOT ASCII letters, but Python's
+    str.isupper() is True for them too."""
+    owner = TAIL_FOOD_OWNERS.get(ch)
+    if owner is None:
+        return False
+    tail_food[pos] = owner
+    return True
+
+
 def _classify_snake_char(ch, pos, heads, bodies):
     if ch.isupper():
         heads[ch] = pos
@@ -108,35 +134,42 @@ def _classify_snake_char(ch, pos, heads, bodies):
         bodies.setdefault(ch, set()).add(pos)
 
 
-def _classify_cell(ch, pos, food, pickups, walls, heads, bodies):
+def _classify_cell(ch, pos, food, pickups, walls, tail_food, heads, bodies):
     if _classify_special_char(ch, pos, food, pickups, walls):
+        return
+    if _classify_tail_food_char(ch, pos, tail_food):
         return
     _classify_snake_char(ch, pos, heads, bodies)
 
 
 class Board:
     """Immutable snapshot of one turn's grid, already classified into
-    heads / bodies (unordered at this stage) / food / pickups / walls."""
+    heads / bodies (unordered at this stage) / food / pickups / walls /
+    tail_food."""
 
-    __slots__ = ('rows', 'cols', 'heads', 'bodies', 'food', 'pickups', 'walls')
+    __slots__ = ('rows', 'cols', 'heads', 'bodies', 'food', 'pickups',
+                 'walls', 'tail_food')
 
-    def __init__(self, rows, cols, heads, bodies, food, pickups, walls=()):
+    def __init__(self, rows, cols, heads, bodies, food, pickups, walls=(),
+                 tail_food=None):
         self.rows = rows
         self.cols = cols
-        self.heads = heads      # {'A': (r,c), 'B': (r,c)}
-        self.bodies = bodies    # {'a': {(r,c), ...}, 'b': {...}} -- UNORDERED
-        self.food = food        # {(r,c): digit_or_None}
-        self.pickups = pickups  # [(r,c), ...]
-        self.walls = walls      # [(r,c), ...] -- the current '#' hazard, if any
+        self.heads = heads          # {'A': (r,c), 'B': (r,c)}
+        self.bodies = bodies        # {'a': {(r,c), ...}, 'b': {...}} -- UNORDERED
+        self.food = food            # {(r,c): digit_or_None}
+        self.pickups = pickups      # [(r,c), ...]
+        self.walls = walls          # [(r,c), ...] -- the current '#' hazard, if any
+        self.tail_food = tail_food or {}  # {(r,c): 'A'|'B'} -- who may eat it
 
     @classmethod
     def from_turn(cls, board_str, rows, cols):
         grid = parse_grid(board_str, rows, cols)
-        food, pickups, walls, heads, bodies = {}, [], [], {}, {}
+        food, pickups, walls, tail_food, heads, bodies = {}, [], [], {}, {}, {}
         for r in range(rows):
             for c in range(cols):
-                _classify_cell(grid[r][c], (r, c), food, pickups, walls, heads, bodies)
-        return cls(rows, cols, heads, bodies, food, pickups, walls)
+                _classify_cell(grid[r][c], (r, c), food, pickups, walls,
+                                tail_food, heads, bodies)
+        return cls(rows, cols, heads, bodies, food, pickups, walls, tail_food)
 
     def in_bounds(self, pos):
         r, c = pos

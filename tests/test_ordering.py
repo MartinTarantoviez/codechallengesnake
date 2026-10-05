@@ -44,8 +44,13 @@ def test_regression_game_4d70dada():
 
     state = GameState(15, 15, {'A': head, 'B': (9, 8)}, bodies,
                        food={}, pickups=[])
-    new_state, _reward = state.simulate('A', 'B', 'left')
-    assert new_state is None, "moving into the neck should be illegal, but wasn't"
+    new_state, reward = state.simulate('A', 'B', 'left')
+    # v7: no longer illegal/fatal, but it must still be correctly
+    # recognized as a crash into the neck (reward -500, stays put) --
+    # not a free, legal shift as a wrong tail guess would wrongly allow.
+    assert new_state is not None and reward == -500.0
+    assert new_state.heads['A'] == head, \
+        "moving into the neck should crash (stay put), but wasn't recognized as one"
     print('test_regression_game_4d70dada: OK')
 
 

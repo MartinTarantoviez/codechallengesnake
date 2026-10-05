@@ -30,8 +30,8 @@ Flags:
 ```
 snake/
   board.py       Board: parses the raw board string into heads/bodies/
-                 food/pickups/walls. Knows the v3 cyclic "next correct
-                 digit" rule (via digits.py).
+                 food/pickups/walls/tail_food. Knows the v3 cyclic "next
+                 correct digit" rule (via digits.py).
   digits.py      The v3 cyclic "next correct digit" rule in one place,
                  shared by Board and GameState so it's never duplicated.
   ordering.py    BodyOrderer: turns each snake's unordered body cells
@@ -45,7 +45,7 @@ snake/
   game_state.py  GameState: one turn's ordered snapshot, plus
                  simulate()/legal_moves() -- the only place that knows
                  the actual scoring rules (correct digit / wrong digit
-                 / pickup / multiplier).
+                 / pickup / multiplier / crash+tail-food, v7).
   evaluator.py   Evaluator: heuristic score for a GameState (territory,
                  target-digit pull, pickup pull, length, exit safety).
   pickup_rush.py PickupPlanner: computes an actual BFS shortest-path
@@ -62,7 +62,7 @@ snake/
   main.py        CLI entry point.
 tests/
   test_board.py     board parsing: legacy '*', v3 digits + cyclic
-                     target, v4 pickups.
+                     target, v4 pickups, v5 walls, v7 tail food.
   test_ordering.py  neck/tail ordering, including the exact ambiguous
                      coiled-body shape that used to make the bot walk
                      into itself.
@@ -109,33 +109,64 @@ never hardcode 15.
 ### Food and scoring (current rules, see `docs` link below for the source)
 
 - Surviving a move: **+1**.
-- Crashing into the board edge, your own body, or the opponent:
-  **-500**, ends the game, opponent gets **+1000**.
 - Food is five digits `1`-`9` on the board at once, eaten in ascending
   **cyclic** order (`...,8,9,1,2,...`, no `0`). Eating the correct next
   digit grows you and scores `digit * 100 * your_multiplier`. Eating
   any other digit is a **-500 penalty** (does not end the game) and
-  that digit reappears elsewhere.
+  that digit reappears elsewhere. Since **v6 (30 Sep 2026)** each of
+  the five digits appears in **several copies** (3-5, random) instead
+  of one cell; eating the target consumes *every* copy of that digit
+  at once (scores/grows once, for the copy actually landed on) and the
+  next digit appears in its own fresh set of copies. A wrong-digit
+  copy still only consumes that one cell.
 - `X` pickups score a flat **+50** and permanently bump your score
   multiplier (`x2`, then `x3`, ...). The multiplier only applies to
   food points -- not the `+50` itself, not the per-move `+1`, not
   penalties. `X` does **not** grow your snake.
 - A single `#` **wall** (v5, since 23 Sep 2026) can be on the board at
   a time: a straight line, odd length up to 11, placed on empty cells.
-  Running your head into it is a **-500 penalty** and your snake
-  **does not move** that turn -- unlike every other collision, this is
-  *not* fatal, the game just continues. After both players have moved,
-  the wall shrinks one cell off each end (`11 -> 9 -> 7 -> ... -> 1 ->
-  gone`), then a new one appears elsewhere at random. There's no
-  separate field for it -- read the `#` cells straight off the board,
-  same as everything else.
+  After both players have moved, the wall shrinks one cell off each end
+  (`11 -> 9 -> 7 -> ... -> 1 -> gone`), then a new one appears elsewhere
+  at random. There's no separate field for it -- read the `#` cells
+  straight off the board, same as everything else.
+- **Crashes (v7, since 7 Oct 2026):** running into the board edge, your
+  own body, a `#` wall, or the opponent **no longer ends the game**.
+  Matches also got longer: **400 moves** (200 per player) instead of
+  300. Instead of dying, a crash:
+  - Leaves your snake **in place** that turn (doesn't move, like a
+    wall bump always did).
+  - **Sheds your tail**: you keep only your first 3 cells (head + 2);
+    the rest becomes **tail food** for the opponent. A snake of 3 cells
+    or fewer loses nothing.
+  - **Wipes your score to 0** on your *first* crash of the match; every
+    crash after that is the usual **-500**. If your score is already
+    `<= 0` at your first crash, the usual -500 still applies (a crash
+    is never a way to launder a negative score, but it still counts as
+    your first one).
+  - Gives the opponent **nothing** (no more `+1000` for your crash).
+  - Falling below **-2500** total still ends the game (you lose).
+  - Tail food is drawn as a circled letter -- `Ⓐ` (`U+24B6`) only `A`
+    may eat, `Ⓑ` (`U+24B7`) only `B` -- so a crash always feeds the
+    *rival*, never the snake that shed it. Eating your own tail food
+    scores **+100 x multiplier** and grows you by one cell; it's not
+    part of the digit sequence (no penalty for "wrong" tail food) and
+    isn't replaced once eaten. The shedding snake can still step on its
+    own leftover tail food -- that just **clears it** (no points, no
+    growth, a plain survive-the-move), a way to deny it to the rival.
+    These are single Unicode characters, not ASCII -- see the "turn_data"
+    section below.
 - `turn_data` includes `board_size` (`"15x18"`), and from the
   multiplier rule on, `multiplier_1`/`multiplier_2`.
 
 Full source: the challenge's own `/how-to-play` page (ask whoever set
 up your bot token for the current URL -- it's the canonical source and
 gets updated when rules change; this README mirrors it as of the rules
-version in effect on 2026-09-22).
+version in effect on 2026-10-05 -- **note**: the PDF copy of the rules
+in this repo (`Snake — How to play.pdf`) was corrupted/truncated when
+last saved (cuts off mid-document at page 4 of 10, right as it reaches
+the example-log section); the rule text above was recovered directly
+from the PDF's compressed content streams. Worth re-saving a fresh,
+complete copy next time the rules page is open.
 
 ### Open questions / assumptions worth re-checking
 
@@ -152,6 +183,15 @@ version in effect on 2026-09-22).
   (matches the one example log in the rules doc), cached per game the
   first time both fields are seen. Re-check this mapping once a few
   real v4 matches are logged.
+- **Crash score accounting (v7)**: `GameState` doesn't track real
+  cumulative score at all (only relative reward, for the lookahead
+  search), so it can't tell a first crash (wipes to 0) from a later one
+  (-500) -- every crash is simplified to a flat `CRASH_PENALTY` (-500)
+  in `game_state.py`. This under-counts the true cost of a first crash
+  when you're sitting on a big lead, but keeps the 2-ply search's
+  relative move ranking sound without threading real score through
+  every `GameState`. Worth revisiting if the bot starts taking
+  first-crash risks it shouldn't.
 - **Outgoing challenge protocol** (`--challenge`): unconfirmed, see
   `client.py`'s `challenge_user` docstring.
 
@@ -161,28 +201,37 @@ version in effect on 2026-09-22).
    each snake's body into an exact neck->tail list using last turn's head
    position (unambiguous), falling back to a single-frame heuristic only
    on turn 1.
-2. **Simulate.** `GameState.simulate` advances one snake one step,
-   returning `None` if that's immediately fatal (wall/body/opponent,
-   except a snake's own vacating tail), and the real point reward
-   otherwise (correct-digit growth+score, wrong-digit penalty, pickup
-   score+multiplier bump).
+2. **Simulate.** `GameState.simulate` advances one snake one step and
+   returns the real point reward (correct-digit growth+score,
+   wrong-digit penalty, pickup score+multiplier bump, tail-food
+   score+growth). Since v7 a crash (wall/body/edge/opponent, except a
+   snake's own vacating tail) is no longer fatal: it returns `None`
+   only if the snake itself doesn't exist in the state; a crash instead
+   leaves the snake in place, sheds its tail, and charges the flat
+   crash penalty (see the "Crashes" rule above).
 3. **Evaluate.** For a resulting position, `Evaluator` scores:
    - **Territory**: simultaneous BFS from both heads (a la Voronoi) --
      more reachable-first cells is safer and keeps options open.
-   - **Target digit** value: only the *correct* next digit is chased;
-     value decays with BFS distance and is zeroed out if the opponent
-     would reach it first.
+   - **Target digit** value: only the *correct* next digit is chased,
+     toward whichever reachable copy (v6) is closest; value decays with
+     BFS distance and is zeroed out if the opponent would reach it
+     first.
+   - **Tail food** (v7) value: same shape as the target digit, for any
+     reachable tail food this side is actually allowed to eat.
    - **Pickup (`X`)** value: same decay-with-distance shape, weighted
      lower than food since its main value (permanent multiplier) is
      long-run rather than a one-off score.
    - **Length advantage** and a small **exit penalty** (avoid dead-end
-     corridors).
+     corridors) -- a crash's tail-shedding naturally shows up here too,
+     since it shrinks `len(my_body)`.
 4. **Choose.** `SnakeStrategy` does a 2-ply search: for each of our
    legal moves, assume the opponent then plays *their* best reply (by
    their own evaluation), and score our move as `our immediate reward +
-   evaluation of the position after their reply`. Picks the best; falls
-   back to "whatever direction stays on the board" if every move is
-   immediately fatal.
+   evaluation of the position after their reply`. Picks the best.
+   Since v7 a crash is survivable, `legal_moves` is essentially never
+   empty (only if the snake itself is missing from the state), so the
+   old "every move is immediately fatal" fallback is now effectively
+   dead code kept as a defensive no-op.
 5. **Override for a worthwhile pickup.** `PickupPlanner` separately
    computes the single most valuable *reachable and winnable* `X`
    pickup (skips it if the opponent would get there first, or if

@@ -95,7 +95,13 @@ def test_step_toward_routes_around_board_wall():
 
 def test_step_toward_none_when_target_unreachable():
     # pickup sealed off entirely by opponent's body -> no route exists.
-    state = GameState(5, 5, {'A': (0, 0), 'B': (4, 4)}, {'a': [], 'b': [(0, 1), (1, 0)]},
+    # Since v7 a crash is survivable, so A always has 4 "legal" moves
+    # now (all bouncing back to (0,0)); the throwaway last cell (2,2)
+    # keeps both real blockers (0,1)/(1,0) solid despite walls_for()
+    # freeing the body list's last element as a vacating tail -- same
+    # trick as test_pickup_target_skips_pickup_unreachable_by_us below.
+    state = GameState(5, 5, {'A': (0, 0), 'B': (4, 4)},
+                       {'a': [], 'b': [(0, 1), (1, 0), (2, 2)]},
                        {}, [(4, 0)], remaining_moves=200)
     planner = PickupPlanner('A', 'B')
     legal_moves = state.legal_moves('A', 'B')

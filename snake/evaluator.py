@@ -35,11 +35,11 @@ def _is_endgame(remaining_moves):
     return remaining_moves is not None and remaining_moves < _ENDGAME_REMAINING_MOVES
 
 
-def _target_position(state, target_digit):
-    for pos, dig in state.food.items():
-        if dig == target_digit or (dig is None and target_digit is None):
-            return pos
-    return None
+def _target_positions(state, target_digit):
+    # v6: several copies of the target digit can be on the board at
+    # once, so chase whichever copy is actually closest/winnable, not
+    # just the first one a dict scan happens to find.
+    return [pos for pos, dig in state.food.items() if dig == target_digit]
 
 
 def _wins_the_race(dist_me, dist_opp, pos):
@@ -52,14 +52,36 @@ def _wins_the_race(dist_me, dist_opp, pos):
     return d_me
 
 
-def _target_term(target_digit, target_pos, dist_me, dist_opp, my_mult, decay):
-    if target_pos is None:
-        return 0.0
-    d_me = _wins_the_race(dist_me, dist_opp, target_pos)
+def _closest_winnable(positions, dist_me, dist_opp):
+    best_d = None
+    for pos in positions:
+        d_me = _wins_the_race(dist_me, dist_opp, pos)
+        if d_me is not None and (best_d is None or d_me < best_d):
+            best_d = d_me
+    return best_d
+
+
+def _target_term(state, target_digit, dist_me, dist_opp, my_mult, decay):
+    d_me = _closest_winnable(_target_positions(state, target_digit), dist_me, dist_opp)
     if d_me is None:
         return 0.0
     value = (target_digit or 1) * 100.0 * my_mult
     return value / (1.0 + decay * d_me) / 100.0  # normalized like the old food term
+
+
+def _my_tail_food(state, me):
+    return [pos for pos, owner in state.tail_food.items() if owner == me]
+
+
+def _tail_food_term(state, me, dist_me, dist_opp, my_mult, decay):
+    # Eating your own tail food is worth +100*multiplier and grows you,
+    # same economics as a correct digit=1 -- reuse the target-digit
+    # weight rather than tuning a whole separate one for it.
+    d_me = _closest_winnable(_my_tail_food(state, me), dist_me, dist_opp)
+    if d_me is None:
+        return 0.0
+    value = 100.0 * my_mult
+    return value / (1.0 + decay * d_me) / 100.0
 
 
 def _pickup_term(pickups, dist_me, dist_opp, decay):
@@ -127,12 +149,13 @@ class Evaluator:
         )
         target_w, pickup_w, territory_w, decay = self._weights(state.remaining_moves)
         target_digit = state.target_digit()
-        target_pos = _target_position(state, target_digit)
         my_mult = state.multipliers.get(self.me, 1)
 
         score = (my_t - opp_t) * territory_w
-        score += _target_term(target_digit, target_pos, dist_me, dist_opp,
+        score += _target_term(state, target_digit, dist_me, dist_opp,
                                my_mult, decay) * target_w
+        score += _tail_food_term(state, self.me, dist_me, dist_opp,
+                                  my_mult, decay) * target_w
         score += _pickup_term(state.pickups, dist_me, dist_opp, decay) * pickup_w
         score += self._multiplier_edge_term(state)
         score += (len(my_body) - len(opp_body)) * _LENGTH_WEIGHT
