@@ -61,6 +61,26 @@ def test_regression_game_4d70dada_rejects_moving_into_the_neck():
     print('test_regression_game_4d70dada_rejects_moving_into_the_neck: OK')
 
 
+# Real match regression (2026-10-10): a 22-cell body coiled through a
+# narrow corridor, where the greedy (non-backtracking) walker used to
+# commit to the wrong branch at (9,5) -- a mid-path pinch, not one next
+# to the neck -- and dead-end after only 6 cells. The engine then
+# silently stopped treating the other 16 cells as solid at all.
+_COILED_CORRIDOR_NECK = (10, 5)
+_COILED_CORRIDOR_BODY = {
+    (8, 4), (8, 5), (9, 4), (9, 5), (9, 6), (10, 4), (10, 5), (10, 6),
+    (10, 7), (11, 7), (11, 8), (12, 6), (12, 7), (12, 8), (13, 7),
+    (13, 8), (14, 7), (14, 8), (15, 7), (15, 8), (16, 7), (16, 8),
+}
+
+
+def test_regression_coiled_corridor_body_resolves_every_cell():
+    ordered = order_body_from_neck(_COILED_CORRIDOR_NECK, _COILED_CORRIDOR_BODY)
+    assert len(ordered) == len(_COILED_CORRIDOR_BODY)
+    assert set(ordered) == _COILED_CORRIDOR_BODY
+    print('test_regression_coiled_corridor_body_resolves_every_cell: OK')
+
+
 def test_order_bodies_no_history_falls_back():
     bodies = BodyOrderer.order_all(
         heads={'A': (5, 5), 'B': (0, 0)},
@@ -76,5 +96,6 @@ if __name__ == '__main__':
     test_tail_basic()
     test_regression_game_4d70dada_orders_the_ambiguous_coil_correctly()
     test_regression_game_4d70dada_rejects_moving_into_the_neck()
+    test_regression_coiled_corridor_body_resolves_every_cell()
     test_order_bodies_no_history_falls_back()
     print('ALL ORDERING TESTS PASSED')

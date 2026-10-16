@@ -76,6 +76,22 @@ def test_board_without_tail_food_has_empty_dict():
     print('test_board_without_tail_food_has_empty_dict: OK')
 
 
+def test_bombs_parsed_separately_from_everything_else():
+    board_str = "|A\U0001F4A3|\n|\U0001F9E8 |"
+    b = _mk(board_str, 2, 2)
+    assert b.big_bombs == [(0, 1)]
+    assert b.small_bombs == [(1, 0)]
+    assert b.heads == {'A': (0, 0)}
+    print('test_bombs_parsed_separately_from_everything_else: OK')
+
+
+def test_board_without_bombs_has_empty_lists():
+    board_str = "|A |\n|  |"
+    b = _mk(board_str, 2, 2)
+    assert b.big_bombs == [] and b.small_bombs == []
+    print('test_board_without_bombs_has_empty_lists: OK')
+
+
 def test_heads_and_bodies_parsed():
     board_str = "|Aab |\n|    |\n|    |\n|   B|"
     b = _mk(board_str, 4, 4)
@@ -94,5 +110,7 @@ if __name__ == '__main__':
     test_board_without_a_wall_has_empty_walls()
     test_tail_food_parsed_and_not_mistaken_for_a_snake_head()
     test_board_without_tail_food_has_empty_dict()
+    test_bombs_parsed_separately_from_everything_else()
+    test_board_without_bombs_has_empty_lists()
     test_heads_and_bodies_parsed()
     print('ALL BOARD TESTS PASSED')

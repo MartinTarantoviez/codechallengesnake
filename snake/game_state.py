@@ -33,6 +33,12 @@ Scoring assumptions encoded here (from the rules PDF):
     score to 0 on your first crash of the match and only charge -500 on
     later ones -- every crash is simplified to a flat -500 reward; see
     CRASH_PENALTY below and the README for the full rule.
+  - Bombs (v8, 14 Oct 2026): not a crash at all -- the move happens
+    completely normally (you eat whatever's on the landed cell, keep
+    your tail), it's just that landing within Chebyshev distance 2 of
+    a big bomb or 1 of a small one also sets it off. Same simplified
+    flat penalty as a crash (see EXPLOSION_PENALTY), applied *in place
+    of* that move's normal reward, not in addition to it.
 
 DIRECTIONS / in_bounds / neighbors4 live in board.py; this module only
 adds the *dynamic* (turn-to-turn) pieces: ordering, simulation, reward.
@@ -52,10 +58,17 @@ DIRECTIONS = {
 
 WRONG_DIGIT_PENALTY = -500.0
 CRASH_PENALTY = -500.0
+EXPLOSION_PENALTY = -500.0
 PICKUP_SCORE = 50.0
 CORRECT_DIGIT_UNIT = 100.0
 TAIL_FOOD_UNIT = 100.0
 CRASH_KEPT_BODY = 2  # body segments kept beyond the head after a crash
+BIG_BOMB_RADIUS = 2    # Chebyshev distance -- a 5x5 blast square
+SMALL_BOMB_RADIUS = 1  # Chebyshev distance -- a 3x3 blast square
+
+
+def _chebyshev(a, b):
+    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
 # is_correct / is_wrong: landed on the right/wrong digit.
 # is_pickup: landed on an 'X'. is_tail_food_mine: landed on tail food you
@@ -96,12 +109,13 @@ class GameState:
     pickups: [(r,c), ...]
     walls: {(r,c), ...}  -- the current '#' hazard, if any
     tail_food: {(r,c): 'A'|'B'}  -- who may eat it, dropped by a crash
+    big_bombs / small_bombs: [(r,c), ...]  -- 5x5 / 3x3 blast squares (v8)
     multipliers: {'A': int, 'B': int}  -- starts at 1 each
     """
 
     def __init__(self, rows, cols, heads, bodies, food, pickups,
                  multipliers=None, remaining_moves=None, walls=None,
-                 tail_food=None):
+                 tail_food=None, big_bombs=(), small_bombs=()):
         self.rows = rows
         self.cols = cols
         self.heads = heads
@@ -112,6 +126,8 @@ class GameState:
         self.remaining_moves = remaining_moves
         self.walls = walls if walls is not None else frozenset()
         self.tail_food = tail_food if tail_food is not None else {}
+        self.big_bombs = big_bombs
+        self.small_bombs = small_bombs
 
     @classmethod
     def from_board(cls, board, prev_heads=None, multipliers=None,
@@ -120,7 +136,8 @@ class GameState:
         return cls(board.rows, board.cols, dict(board.heads), ordered_bodies,
                     dict(board.food), list(board.pickups),
                     multipliers, remaining_moves, set(board.walls),
-                    dict(board.tail_food))
+                    dict(board.tail_food), list(board.big_bombs),
+                    list(board.small_bombs))
 
     def in_bounds(self, pos):
         r, c = pos
@@ -139,6 +156,13 @@ class GameState:
         if tail is not None:
             solid.discard(tail)  # our own tail vacates unless we grow into it
         return solid
+
+    def _in_blast_range(self, pos):
+        """v8: True if `pos` sets off a bomb -- not a crash, just a flat
+        penalty on top of whatever that move would otherwise do."""
+        if any(_chebyshev(pos, b) <= BIG_BOMB_RADIUS for b in self.big_bombs):
+            return True
+        return any(_chebyshev(pos, b) <= SMALL_BOMB_RADIUS for b in self.small_bombs)
 
     def _is_crash(self, new_head, my_body, other_body, other_head, tail, grows):
         if not self.in_bounds(new_head):
@@ -194,6 +218,12 @@ class GameState:
             new_tail_food.pop(new_head, None)
         return new_food, new_pickups, new_tail_food
 
+    def _reward_for(self, landing, head_letter, new_head, my_multiplier, grows):
+        if self._in_blast_range(new_head):
+            return EXPLOSION_PENALTY  # v8: replaces, never stacks with the landing reward
+        mult = my_multiplier if my_multiplier is not None else self.multipliers.get(head_letter, 1)
+        return landing.reward * mult if grows else landing.reward
+
     def _apply_multiplier(self, head_letter, is_pickup):
         new_multipliers = dict(self.multipliers)
         if is_pickup:
@@ -215,7 +245,7 @@ class GameState:
         return GameState(
             self.rows, self.cols, dict(self.heads), new_bodies, dict(self.food),
             list(self.pickups), dict(self.multipliers), self.remaining_moves,
-            self.walls, new_tail_food,
+            self.walls, new_tail_food, self.big_bombs, self.small_bombs,
         )
 
     def simulate(self, head_letter, other_letter, direction, my_multiplier=None):
@@ -248,8 +278,7 @@ class GameState:
         if self._is_crash(new_head, my_body, other_body, other_head, tail, grows):
             return self._crash(head_letter, other_letter, head), CRASH_PENALTY
 
-        mult = my_multiplier if my_multiplier is not None else self.multipliers.get(head_letter, 1)
-        reward = landing.reward * mult if grows else landing.reward
+        reward = self._reward_for(landing, head_letter, new_head, my_multiplier, grows)
 
         new_bodies = dict(self.bodies)
         new_bodies[body_letter] = _advance_body(head, my_body, grows)
@@ -261,7 +290,7 @@ class GameState:
         new_state = GameState(
             self.rows, self.cols, new_heads, new_bodies, new_food,
             new_pickups, new_multipliers, self.remaining_moves, self.walls,
-            new_tail_food,
+            new_tail_food, self.big_bombs, self.small_bombs,
         )
         return new_state, reward
 

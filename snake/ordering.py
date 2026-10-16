@@ -1,9 +1,8 @@
 """
 Body ordering (neck -> tail).
 
-Unchanged in behavior from the original snake_ai.py. This is the piece
-that has to be exact: get it wrong and the bot thinks an occupied cell
-is safe to enter.
+This is the piece that has to be exact: get it wrong and the bot thinks
+an occupied cell is safe to enter.
 
 A snake's neck is always exactly where its head was one turn ago --
 that's unambiguous. BodyOrderer.order_all() uses each snake's previous
@@ -13,6 +12,16 @@ previous head yet) does it fall back to a single-frame heuristic, which
 is ambiguous whenever a coiled snake has both its neck and its tail
 adjacent to the head at once (see the regression test for the exact
 shape that used to kill the bot: body {(6,6),(7,6),(7,7)}, head (6,7)).
+
+_walk_path backtracks rather than greedily committing to the first
+unvisited neighbor it finds: a tightly coiled body can bring two
+*non-consecutive* segments next to each other, so the first neighbor
+isn't always the real next segment. Picking it anyway used to dead-end
+early and silently drop the rest of the body from every collision
+check -- a real match (body of 22 cells coiled through a narrow
+corridor) saw this resolve only 6 of 22 cells, after which the engine
+no longer recognized several of the opponent's own body cells as solid
+at all, and the bot walked straight into one of them turn after turn.
 """
 
 from .board import neighbors4
@@ -27,18 +36,29 @@ def _unvisited_body_neighbors(cur, body_set, prev, visited):
     return result
 
 
+def _extend_path(path, visited, body_set, target_len, exclude):
+    if len(path) == target_len:
+        return True
+    cur = path[-1]
+    prev = path[-2] if len(path) > 1 else exclude
+    for nxt in _unvisited_body_neighbors(cur, body_set, prev, visited):
+        path.append(nxt)
+        visited.add(nxt)
+        if _extend_path(path, visited, body_set, target_len, exclude):
+            return True
+        path.pop()
+        visited.discard(nxt)
+    return False
+
+
 def _walk_path(start, body_set, exclude):
-    order = [start]
-    visited = {start}
-    prev = exclude
-    cur = start
-    while True:
-        nxts = _unvisited_body_neighbors(cur, body_set, prev, visited)
-        if not nxts:
-            return order
-        prev, cur = cur, nxts[0]
-        visited.add(cur)
-        order.append(cur)
+    """The neck(or heuristic-start)->tail order, backtracking whenever a
+    branch can't be extended to cover every cell in body_set. Returns
+    the longest path found; a short result (compare against
+    len(body_set)) means no full path exists from `start` at all."""
+    path = [start]
+    _extend_path(path, {start}, body_set, len(body_set), exclude)
+    return path
 
 
 def _degree_in_set(p, body_set):

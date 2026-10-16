@@ -35,6 +35,21 @@ Rule history (see docs/RULES.md for the full source):
       letters even though str.isupper() is True for them, so they must
       be classified before the generic snake-head check or they'd be
       mistaken for a third snake's head.
+  v8 (14 Oct 2026): two big bombs (U+1F4A3 'BOMB') and five small ones
+      (U+1F9E8 'FIRECRACKER') sit on the board. You don't have to step
+      on one: it goes off whenever your head *ends a move* within
+      Chebyshev distance 2 of a big bomb or 1 of a small one (a 5x5 /
+      3x3 blast square). It is NOT a crash -- your move still happens
+      normally, you still eat whatever's on the landed cell, and you
+      keep your tail. See GameState.simulate for the score consequence.
+      A bomb that goes off is replaced elsewhere (same size, never in
+      range of any head); food/pickups never spawn inside a blast
+      square; and every bomb vanishes for good after round 150. Boards
+      are now 20-30 per side (was 12-20) -- still never hardcoded.
+      These emoji are outside the Unicode BMP, unlike every other board
+      character so far -- Python's str already iterates by code point
+      so parse_grid needs no change, but anything reading this board in
+      JS/Java/Go must split by code point too (see README).
 
 This module stays legacy-compatible: a board with only '*' still parses
 and plays fine (target_digit is simply None, meaning "any food cell is
@@ -47,6 +62,8 @@ EMPTY = ' '
 LEGACY_FOOD = '*'
 PICKUP = 'X'
 WALL = '#'
+BIG_BOMB = '\U0001F4A3'    # 💣
+SMALL_BOMB = '\U0001F9E8'  # 🧨
 DIGITS = set('123456789')
 TAIL_FOOD_OWNERS = {'Ⓐ': 'A', 'Ⓑ': 'B'}
 
@@ -108,12 +125,27 @@ def _classify_marker_char(ch, pos, pickups, walls):
     return False
 
 
-def _classify_special_char(ch, pos, food, pickups, walls):
-    """Handles '*' / a food digit / 'X' / '#' / empty space. Returns True
-    if the character was one of those (nothing left for the caller to do)."""
+def _classify_bomb_char(ch, pos, big_bombs, small_bombs):
+    """Handles the two bomb emoji. Returns True if the character was
+    one of those."""
+    if ch == BIG_BOMB:
+        big_bombs.append(pos)
+        return True
+    if ch == SMALL_BOMB:
+        small_bombs.append(pos)
+        return True
+    return False
+
+
+def _classify_special_char(ch, pos, food, pickups, walls, big_bombs, small_bombs):
+    """Handles '*' / a food digit / 'X' / '#' / a bomb / empty space.
+    Returns True if the character was one of those (nothing left for
+    the caller to do)."""
     if _classify_food_char(ch, pos, food):
         return True
-    return _classify_marker_char(ch, pos, pickups, walls)
+    if _classify_marker_char(ch, pos, pickups, walls):
+        return True
+    return _classify_bomb_char(ch, pos, big_bombs, small_bombs)
 
 
 def _classify_tail_food_char(ch, pos, tail_food):
@@ -134,8 +166,9 @@ def _classify_snake_char(ch, pos, heads, bodies):
         bodies.setdefault(ch, set()).add(pos)
 
 
-def _classify_cell(ch, pos, food, pickups, walls, tail_food, heads, bodies):
-    if _classify_special_char(ch, pos, food, pickups, walls):
+def _classify_cell(ch, pos, food, pickups, walls, bombs, tail_food, heads, bodies):
+    big_bombs, small_bombs = bombs
+    if _classify_special_char(ch, pos, food, pickups, walls, big_bombs, small_bombs):
         return
     if _classify_tail_food_char(ch, pos, tail_food):
         return
@@ -145,13 +178,13 @@ def _classify_cell(ch, pos, food, pickups, walls, tail_food, heads, bodies):
 class Board:
     """Immutable snapshot of one turn's grid, already classified into
     heads / bodies (unordered at this stage) / food / pickups / walls /
-    tail_food."""
+    bombs / tail_food."""
 
     __slots__ = ('rows', 'cols', 'heads', 'bodies', 'food', 'pickups',
-                 'walls', 'tail_food')
+                 'walls', 'big_bombs', 'small_bombs', 'tail_food')
 
     def __init__(self, rows, cols, heads, bodies, food, pickups, walls=(),
-                 tail_food=None):
+                 tail_food=None, big_bombs=(), small_bombs=()):
         self.rows = rows
         self.cols = cols
         self.heads = heads          # {'A': (r,c), 'B': (r,c)}
@@ -160,16 +193,20 @@ class Board:
         self.pickups = pickups      # [(r,c), ...]
         self.walls = walls          # [(r,c), ...] -- the current '#' hazard, if any
         self.tail_food = tail_food or {}  # {(r,c): 'A'|'B'} -- who may eat it
+        self.big_bombs = big_bombs      # [(r,c), ...] -- 5x5 blast each
+        self.small_bombs = small_bombs  # [(r,c), ...] -- 3x3 blast each
 
     @classmethod
     def from_turn(cls, board_str, rows, cols):
         grid = parse_grid(board_str, rows, cols)
         food, pickups, walls, tail_food, heads, bodies = {}, [], [], {}, {}, {}
+        big_bombs, small_bombs = [], []
         for r in range(rows):
             for c in range(cols):
                 _classify_cell(grid[r][c], (r, c), food, pickups, walls,
-                                tail_food, heads, bodies)
-        return cls(rows, cols, heads, bodies, food, pickups, walls, tail_food)
+                                (big_bombs, small_bombs), tail_food, heads, bodies)
+        return cls(rows, cols, heads, bodies, food, pickups, walls,
+                    tail_food, big_bombs, small_bombs)
 
     def in_bounds(self, pos):
         r, c = pos

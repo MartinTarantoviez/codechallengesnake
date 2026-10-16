@@ -30,8 +30,8 @@ Flags:
 ```
 snake/
   board.py       Board: parses the raw board string into heads/bodies/
-                 food/pickups/walls/tail_food. Knows the v3 cyclic "next
-                 correct digit" rule (via digits.py).
+                 food/pickups/walls/tail_food/bombs. Knows the v3 cyclic
+                 "next correct digit" rule (via digits.py).
   digits.py      The v3 cyclic "next correct digit" rule in one place,
                  shared by Board and GameState so it's never duplicated.
   ordering.py    BodyOrderer: turns each snake's unordered body cells
@@ -45,9 +45,11 @@ snake/
   game_state.py  GameState: one turn's ordered snapshot, plus
                  simulate()/legal_moves() -- the only place that knows
                  the actual scoring rules (correct digit / wrong digit
-                 / pickup / multiplier / crash+tail-food, v7).
+                 / pickup / multiplier / crash+tail-food (v7) / bomb
+                 explosions (v8)).
   evaluator.py   Evaluator: heuristic score for a GameState (territory,
-                 target-digit pull, pickup pull, length, exit safety).
+                 target-digit pull, pickup pull, length, exit safety,
+                 bomb-proximity safety).
   pickup_rush.py PickupPlanner: computes an actual BFS shortest-path
                  route to the single best reachable X pickup and steers
                  along it -- see "Pickup strategy" below.
@@ -62,7 +64,8 @@ snake/
   main.py        CLI entry point.
 tests/
   test_board.py     board parsing: legacy '*', v3 digits + cyclic
-                     target, v4 pickups, v5 walls, v7 tail food.
+                     target, v4 pickups, v5 walls, v7 tail food, v8
+                     bombs.
   test_ordering.py  neck/tail ordering, including the exact ambiguous
                      coiled-body shape that used to make the bot walk
                      into itself.
@@ -103,8 +106,8 @@ Each turn arrives as a `your_turn` event; reply with a `move` action:
 `direction` is one of `up` / `down` / `left` / `right`. The board is a
 string of `rows` lines wrapped in `|...|`: `A`/`B` are snake heads,
 `a`/`b` their bodies, empty is a space. Board size varies per match
-(each of `rows`/`cols` is 12-20) -- always read them from `turn_data`,
-never hardcode 15.
+(each of `rows`/`cols` is 12-20, **20-30 since v8**) -- always read
+them from `turn_data`, never hardcode 15.
 
 ### Food and scoring (current rules, see `docs` link below for the source)
 
@@ -155,18 +158,43 @@ never hardcode 15.
     growth, a plain survive-the-move), a way to deny it to the rival.
     These are single Unicode characters, not ASCII -- see the "turn_data"
     section below.
+- **Bombs (v8, since 14 Oct 2026):** two big bombs (💣, `U+1F4A3`) and
+  five small ones (🧨, `U+1F9E8`) sit on the board. You don't have to
+  step on one -- it goes off whenever your head *ends a move* within
+  **Chebyshev distance 2** of a 💣 or **1** of a 🧨 (diagonals count:
+  `distance = max(|Δrow|, |Δcol|)`), i.e. a **5x5** blast square around
+  a big bomb and **3x3** around a small one.
+  - An explosion **wipes your score to 0** (or the usual **-500** if
+    you're already at 0 or negative). Two bombs catching you at once
+    only count as **one** explosion.
+  - It is **not a crash**: your move happens exactly as normal -- you
+    still eat whatever's on the landed cell and keep your tail.
+  - The bomb that went off disappears and an identical-size one appears
+    elsewhere, **never within range of any head**.
+  - Food and `X` never spawn inside a blast square -- everything
+    edible can always be eaten without setting anything off.
+  - After round 150 (150 moves per player) every bomb vanishes for
+    good; the endgame is bomb-free.
+  - Board sizes grew to **20-30** per side (was 12-20).
+  - 💣/🧨 sit **outside the Unicode BMP** (unlike every other board
+    character) -- split board rows by *code point*, not UTF-16 unit:
+    `Array.from(row)` in JS, `row.codePoints()` in Java, `[]rune(row)`
+    in Go. Python's `str` already iterates by code point, so nothing
+    special is needed there.
 - `turn_data` includes `board_size` (`"15x18"`), and from the
   multiplier rule on, `multiplier_1`/`multiplier_2`.
 
 Full source: the challenge's own `/how-to-play` page (ask whoever set
 up your bot token for the current URL -- it's the canonical source and
 gets updated when rules change; this README mirrors it as of the rules
-version in effect on 2026-10-05 -- **note**: the PDF copy of the rules
+version in effect on 2026-10-16 -- **note**: the PDF copy of the rules
 in this repo (`Snake — How to play.pdf`) was corrupted/truncated when
 last saved (cuts off mid-document at page 4 of 10, right as it reaches
-the example-log section); the rule text above was recovered directly
-from the PDF's compressed content streams. Worth re-saving a fresh,
-complete copy next time the rules page is open.
+the example-log section); the rule text above (through v7) was
+recovered directly from the PDF's compressed content streams, and v8
+was transcribed from the professor's Slack announcement instead since
+no updated PDF has been saved yet. Worth re-saving a fresh, complete
+copy next time the rules page is open.
 
 ### Open questions / assumptions worth re-checking
 
@@ -183,15 +211,16 @@ complete copy next time the rules page is open.
   (matches the one example log in the rules doc), cached per game the
   first time both fields are seen. Re-check this mapping once a few
   real v4 matches are logged.
-- **Crash score accounting (v7)**: `GameState` doesn't track real
-  cumulative score at all (only relative reward, for the lookahead
-  search), so it can't tell a first crash (wipes to 0) from a later one
-  (-500) -- every crash is simplified to a flat `CRASH_PENALTY` (-500)
-  in `game_state.py`. This under-counts the true cost of a first crash
-  when you're sitting on a big lead, but keeps the 2-ply search's
-  relative move ranking sound without threading real score through
-  every `GameState`. Worth revisiting if the bot starts taking
-  first-crash risks it shouldn't.
+- **Crash/explosion score accounting (v7/v8)**: `GameState` doesn't
+  track real cumulative score at all (only relative reward, for the
+  lookahead search), so it can't tell a first crash/explosion (wipes to
+  0) from a later one (-500) -- both are simplified to the same flat
+  penalty (`CRASH_PENALTY` / `EXPLOSION_PENALTY`, both -500) in
+  `game_state.py`. This under-counts the true cost of a first one when
+  you're sitting on a big lead, but keeps the 2-ply search's relative
+  move ranking sound without threading real score through every
+  `GameState`. Worth revisiting if the bot starts taking first-hit
+  risks it shouldn't.
 - **Outgoing challenge protocol** (`--challenge`): unconfirmed, see
   `client.py`'s `challenge_user` docstring.
 
@@ -208,7 +237,10 @@ complete copy next time the rules page is open.
    snake's own vacating tail) is no longer fatal: it returns `None`
    only if the snake itself doesn't exist in the state; a crash instead
    leaves the snake in place, sheds its tail, and charges the flat
-   crash penalty (see the "Crashes" rule above).
+   crash penalty (see the "Crashes" rule above). Since v8, landing
+   within a bomb's blast square *also* charges that same flat penalty,
+   but as a normal move (eats the cell, keeps the tail) -- see "Bombs"
+   above.
 3. **Evaluate.** For a resulting position, `Evaluator` scores:
    - **Territory**: simultaneous BFS from both heads (a la Voronoi) --
      more reachable-first cells is safer and keeps options open.
@@ -224,6 +256,10 @@ complete copy next time the rules page is open.
    - **Length advantage** and a small **exit penalty** (avoid dead-end
      corridors) -- a crash's tail-shedding naturally shows up here too,
      since it shrinks `len(my_body)`.
+   - **Bomb proximity** (v8): a smaller penalty than the real explosion
+     reward, so the evaluated position (after both plies) also prefers
+     to sit outside every blast square, not just the one step actually
+     being chosen right now.
 4. **Choose.** `SnakeStrategy` does a 2-ply search: for each of our
    legal moves, assume the opponent then plays *their* best reply (by
    their own evaluation), and score our move as `our immediate reward +

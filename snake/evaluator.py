@@ -18,6 +18,7 @@ used by the 2-ply search's own scoring.
 
 from .bfs import in_bounds, voronoi_territory, walls_for
 from .board import neighbors4
+from .game_state import BIG_BOMB_RADIUS, SMALL_BOMB_RADIUS
 
 _ENDGAME_REMAINING_MOVES = 50
 _LENGTH_WEIGHT = 6.0
@@ -25,6 +26,26 @@ _MULTIPLIER_EDGE_BASE = 8.0
 _MULTIPLIER_EDGE_HORIZON = 150.0
 _EXIT_PENALTY_ONE = -25.0
 _EXIT_PENALTY_TWO = -8.0
+# v8: a bomb going off is a flat -500 (see EXPLOSION_PENALTY in
+# game_state.py) which the search's own reward already strongly avoids
+# for the immediate move; this is a smaller nudge so the *evaluated*
+# position (after both plies) also prefers to end up clear of a blast
+# square, not just the single step we're choosing right now.
+_BOMB_PROXIMITY_PENALTY = -40.0
+
+# The target-digit/tail-food pull terms scale with the multiplier (a
+# high multiplier really does make that food worth more), but
+# uncapped that scaling can run away: a real match had multiplier x8
+# make a single distant digit's pull (~610 after weighting) dwarf even
+# CRASH_PENALTY (-500, see game_state.py), so the search happily
+# crashed into the opponent's head -- wiping a 44,000+ point lead to 0
+# under the v7 first-crash rule -- just because the post-crash
+# body-shedding incidentally shortened the BFS path to that digit.
+# Capping the multiplier used *only* in these pull terms (never in the
+# real reward computed in game_state.py, which must keep scaling with
+# the true multiplier) keeps the heuristic nudge from ever being able
+# to outweigh a guaranteed, severe penalty like a crash.
+_PULL_MULTIPLIER_CAP = 2.0
 
 # (target_digit_weight, pickup_weight, territory_weight, distance_decay)
 _MIDGAME_WEIGHTS = (70.0, 65.0, 0.25, 0.25)
@@ -65,7 +86,7 @@ def _target_term(state, target_digit, dist_me, dist_opp, my_mult, decay):
     d_me = _closest_winnable(_target_positions(state, target_digit), dist_me, dist_opp)
     if d_me is None:
         return 0.0
-    value = (target_digit or 1) * 100.0 * my_mult
+    value = (target_digit or 1) * 100.0 * min(my_mult, _PULL_MULTIPLIER_CAP)
     return value / (1.0 + decay * d_me) / 100.0  # normalized like the old food term
 
 
@@ -80,7 +101,7 @@ def _tail_food_term(state, me, dist_me, dist_opp, my_mult, decay):
     d_me = _closest_winnable(_my_tail_food(state, me), dist_me, dist_opp)
     if d_me is None:
         return 0.0
-    value = 100.0 * my_mult
+    value = 100.0 * min(my_mult, _PULL_MULTIPLIER_CAP)
     return value / (1.0 + decay * d_me) / 100.0
 
 
@@ -109,6 +130,18 @@ _EXIT_PENALTIES = {0: _EXIT_PENALTY_ONE, 1: _EXIT_PENALTY_ONE, 2: _EXIT_PENALTY_
 def _exit_penalty(head, walls, rows, cols):
     exits = _count_open_exits(head, walls, rows, cols)
     return _EXIT_PENALTIES.get(exits, 0.0)
+
+
+def _chebyshev(a, b):
+    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+
+
+def _bomb_penalty(head, big_bombs, small_bombs):
+    if any(_chebyshev(head, b) <= BIG_BOMB_RADIUS for b in big_bombs):
+        return _BOMB_PROXIMITY_PENALTY
+    if any(_chebyshev(head, b) <= SMALL_BOMB_RADIUS for b in small_bombs):
+        return _BOMB_PROXIMITY_PENALTY
+    return 0.0
 
 
 class Evaluator:
@@ -160,4 +193,5 @@ class Evaluator:
         score += self._multiplier_edge_term(state)
         score += (len(my_body) - len(opp_body)) * _LENGTH_WEIGHT
         score += _exit_penalty(my_head, walls, state.rows, state.cols)
+        score += _bomb_penalty(my_head, state.big_bombs, state.small_bombs)
         return score
