@@ -2,9 +2,12 @@
 SnakeBot: the facade run.py (or tests) actually talks to. Owns the
 per-game "previous head" history that BodyOrderer needs (see
 ordering.py's module docstring for why that history is required for a
-correct, non-guessed neck/tail order), and the per-game multiplier
-state (turn_data only gives us multiplier_1/multiplier_2 by player
-*label*, not by side, so the bot tracks it keyed by game_id + side).
+correct, non-guessed neck/tail order), the per-game multiplier state
+(turn_data only gives us multiplier_1/multiplier_2 by player *label*,
+not by side, so the bot tracks it keyed by game_id + side), and the
+per-game `SnakeStrategy` instance itself -- reused turn to turn (not
+rebuilt) so its `PickupPlanner` can remember which pickup it was last
+headed for (see pickup_rush.py's `last_target`).
 """
 
 from .board import Board
@@ -16,10 +19,12 @@ class SnakeBot:
     def __init__(self):
         self._prev_heads = {}       # game_id -> {'A': pos, 'B': pos}
         self._multipliers = {}      # game_id -> {'A': int, 'B': int}
+        self._strategies = {}       # game_id -> SnakeStrategy
 
     def forget_game(self, game_id):
         self._prev_heads.pop(game_id, None)
         self._multipliers.pop(game_id, None)
+        self._strategies.pop(game_id, None)
 
     def choose_move(self, turn_data):
         """turn_data: the 'data' payload of a 'your_turn' event. Returns
@@ -43,7 +48,10 @@ class SnakeBot:
             remaining_moves=turn_data.get('remaining_moves'),
         )
 
-        strategy = SnakeStrategy(side, opp_side)
+        strategy = self._strategies.get(game_id)
+        if strategy is None:
+            strategy = SnakeStrategy(side, opp_side)
+            self._strategies[game_id] = strategy
         direction = strategy.choose_direction(state)
 
         self._prev_heads[game_id] = dict(board.heads)

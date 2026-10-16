@@ -87,6 +87,26 @@ def test_choose_move_returns_up_when_own_head_missing_from_board():
     assert direction == 'up'
 
 
+def test_choose_move_reuses_same_strategy_instance_across_turns():
+    # PickupPlanner needs its `last_target` to survive turn to turn (see
+    # pickup_rush.py) to avoid zig-zagging between near-tied pickups --
+    # that only works if SnakeBot keeps one SnakeStrategy per game_id
+    # instead of rebuilding it every turn.
+    bot = SnakeBot()
+    data = {
+        'game_id': 'g_reuse', 'side': 'A', 'rows': 6, 'cols': 6,
+        'board': '|A     |\n|      |\n|      |\n|      |\n|      |\n|     B|',
+        'remaining_moves': 200,
+    }
+    bot.choose_move(data)
+    strategy_after_turn_1 = bot._strategies['g_reuse']
+    bot.choose_move(data)
+    assert bot._strategies['g_reuse'] is strategy_after_turn_1
+    bot.forget_game('g_reuse')
+    assert 'g_reuse' not in bot._strategies
+    print('test_choose_move_reuses_same_strategy_instance_across_turns: OK')
+
+
 def test_choose_move_reads_v4_multipliers_from_turn_data():
     bot = SnakeBot()
     data = {
@@ -104,5 +124,6 @@ if __name__ == '__main__':
     test_real_matches_legacy_format()
     test_forget_game_clears_history()
     test_choose_move_returns_up_when_own_head_missing_from_board()
+    test_choose_move_reuses_same_strategy_instance_across_turns()
     test_choose_move_reads_v4_multipliers_from_turn_data()
     print('ALL BOT INTEGRATION TESTS PASSED')

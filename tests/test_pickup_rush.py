@@ -187,6 +187,39 @@ def test_suggest_accepts_within_safety_margin():
     print('test_suggest_accepts_within_safety_margin: OK')
 
 
+def test_pickup_target_sticks_with_previous_target_on_near_tie():
+    # (0,5) is one step closer than (0,6), but not closer enough to
+    # overcome STICKY_BONUS -- with last_target already (0,6), the
+    # planner should keep heading there instead of flip-flopping.
+    state = GameState(9, 9, {'A': (0, 0), 'B': (8, 8)}, {'a': [], 'b': []}, {},
+                       [(0, 5), (0, 6)], remaining_moves=200)
+    planner = PickupPlanner('A', 'B')
+    planner.last_target = (0, 6)
+    assert planner._pickup_target(state) == (0, 6)
+    print('test_pickup_target_sticks_with_previous_target_on_near_tie: OK')
+
+
+def test_pickup_target_switches_when_new_one_is_clearly_better():
+    # (0,15) used to be the target, but (0,5) is now dramatically
+    # closer -- STICKY_BONUS must not be enough to keep the far one.
+    state = GameState(20, 20, {'A': (0, 0), 'B': (19, 19)}, {'a': [], 'b': []}, {},
+                       [(0, 5), (0, 15)], remaining_moves=200)
+    planner = PickupPlanner('A', 'B')
+    planner.last_target = (0, 15)
+    assert planner._pickup_target(state) == (0, 5)
+    print('test_pickup_target_switches_when_new_one_is_clearly_better: OK')
+
+
+def test_pickup_target_remembers_choice_for_next_call():
+    state = GameState(9, 9, {'A': (0, 0), 'B': (8, 8)}, {'a': [], 'b': []}, {},
+                       [(0, 3)], remaining_moves=200)
+    planner = PickupPlanner('A', 'B')
+    assert planner.last_target is None
+    planner._pickup_target(state)
+    assert planner.last_target == (0, 3)
+    print('test_pickup_target_remembers_choice_for_next_call: OK')
+
+
 def test_strategy_end_to_end_commits_to_reachable_pickup():
     # No food at all, just a reachable pickup a few steps away: with
     # nothing else competing for attention, SnakeStrategy should head
@@ -215,5 +248,8 @@ if __name__ == '__main__':
     test_suggest_returns_none_when_target_exists_but_unroutable()
     test_suggest_declines_when_below_safety_margin()
     test_suggest_accepts_within_safety_margin()
+    test_pickup_target_sticks_with_previous_target_on_near_tie()
+    test_pickup_target_switches_when_new_one_is_clearly_better()
+    test_pickup_target_remembers_choice_for_next_call()
     test_strategy_end_to_end_commits_to_reachable_pickup()
     print('ALL PICKUP_RUSH TESTS PASSED')

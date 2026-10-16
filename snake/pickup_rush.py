@@ -6,7 +6,13 @@ pickup's pull gets diluted by everything else in the evaluation).
 
 Recomputed fresh every turn (as GameState is immutable per turn), so it
 naturally re-routes around anything that changes -- there's no stale
-"committed plan" to go stale.
+"committed plan" to go stale. The one thing that *is* remembered across
+turns is which pickup we were last headed for (`self.last_target`, set
+by `SnakeBot` reusing the same `SnakeStrategy`/`PickupPlanner` instance
+for a whole game): `_best_target` gives that pickup a `STICKY_BONUS` so
+a real match log doesn't end up zig-zagging turn after turn between two
+pickups sitting at nearly the same distance (confirmed happening before
+this bonus existed -- see the README's pickup-planner note).
 
 Safety: `SnakeStrategy` only takes the suggested direction if its own
 2-ply score isn't more than PICKUP_RUSH_SAFETY_MARGIN worse than the
@@ -18,6 +24,7 @@ from .bfs import bfs_distances, walls_for
 
 MIN_REMAINING_TO_RUSH = 50
 SAFETY_MARGIN = 40.0
+STICKY_BONUS = 1.25
 
 
 def _wrong_digit_cells(state):
@@ -36,17 +43,22 @@ def _race_distance(dist_me, dist_opp, pos):
     return d_me
 
 
-def _best_target(pickups, dist_me, dist_opp, horizon):
+def _target_score(d_me, horizon, p, last_target):
+    opportunity = horizon - d_me
+    if opportunity <= 0:
+        return None
+    score = opportunity / (1.0 + d_me)
+    return score * STICKY_BONUS if p == last_target else score
+
+
+def _best_target(pickups, dist_me, dist_opp, horizon, last_target=None):
     best_pos, best_score = None, float('-inf')
     for p in pickups:
         d_me = _race_distance(dist_me, dist_opp, p)
         if d_me is None:
             continue
-        opportunity = horizon - d_me
-        if opportunity <= 0:
-            continue
-        score = opportunity / (1.0 + d_me)
-        if score > best_score:
+        score = _target_score(d_me, horizon, p, last_target)
+        if score is not None and score > best_score:
             best_score, best_pos = score, p
     return best_pos
 
@@ -55,6 +67,7 @@ class PickupPlanner:
     def __init__(self, me, opp):
         self.me = me
         self.opp = opp
+        self.last_target = None
 
     def _eligible_for_rush(self, state):
         if state.remaining_moves is not None and state.remaining_moves < MIN_REMAINING_TO_RUSH:
@@ -63,9 +76,11 @@ class PickupPlanner:
 
     def _pickup_target(self, state):
         if not self._eligible_for_rush(state):
+            self.last_target = None
             return None
         my_head = state.heads.get(self.me)
         if my_head is None:
+            self.last_target = None
             return None
         opp_head = state.heads.get(self.opp)
         walls = walls_for(state.bodies.get(self.me.lower(), []),
@@ -73,7 +88,9 @@ class PickupPlanner:
         dist_me = bfs_distances(my_head, walls, state.rows, state.cols)
         dist_opp = bfs_distances(opp_head, walls, state.rows, state.cols) if opp_head else {}
         horizon = state.remaining_moves if state.remaining_moves is not None else 200
-        return _best_target(state.pickups, dist_me, dist_opp, horizon)
+        target = _best_target(state.pickups, dist_me, dist_opp, horizon, self.last_target)
+        self.last_target = target
+        return target
 
     def _step_toward(self, state, target, legal_moves):
         obstacles = walls_for(state.bodies.get(self.me.lower(), []),
