@@ -132,14 +132,14 @@ class MatchClient:
         await self._send(websocket, 'challenge', {'opponent': username})
 
     async def _process_turn(self, websocket, data):
-        direction = self.bot.choose_move(data)
-        move = {
+        action, direction = self.bot.choose_move(data)
+        payload = {
             'game_id': data['game_id'],
             'turn_token': data['turn_token'],
             'direction': direction,
         }
-        self.logger.log_action(move['game_id'], {'action': 'move', 'data': move})
-        await self._send(websocket, 'move', move)
+        self.logger.log_action(payload['game_id'], {'action': action, 'data': payload})
+        await self._send(websocket, action, payload)
 
     def _print_match_result(self, data):
         print(

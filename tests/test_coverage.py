@@ -94,11 +94,13 @@ def test_parse_grid_truncates_extra_rows():
 
 
 def test_board_classifies_all_cell_types_legacy_star():
+    # '*' hasn't meant "legacy food" since v9 -- it's shot food now.
     b = Board.from_turn("|Aa*|\n| bB|", 2, 3)
     check('test_board_classifies_all_cell_types_legacy_star',
           b.heads == {'A': (0, 0), 'B': (1, 2)}
           and b.bodies == {'a': {(0, 1)}, 'b': {(1, 1)}}
-          and b.food == {(0, 2): None})
+          and b.food == {}
+          and b.shot_food == [(0, 2)])
 
 
 def test_board_ignores_unknown_chars_but_now_picks_up_digits_as_food():

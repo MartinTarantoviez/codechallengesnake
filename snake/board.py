@@ -50,16 +50,33 @@ Rule history (see docs/RULES.md for the full source):
       character so far -- Python's str already iterates by code point
       so parse_grid needs no change, but anything reading this board in
       JS/Java/Go must split by code point too (see README).
+  v9 (21 Oct 2026): '*' is back, this time as *shot food* -- you can
+      send {"action": "shoot", "data": {"direction": ...}} instead of
+      moving (see GameState.simulate_shoot); a hit cuts the opponent
+      from the hit cell to the tip of their tail and each cut cell
+      becomes a '*' either side may eat. It has nothing to do with the
+      digit sequence any more, so it's parsed into its own
+      `Board.shot_food` list, not into `food`.
+  v10 (28 Oct 2026): a single star, U+2B50 ('STAR'), can appear; eating
+      it works like shot food (+100*multiplier, grows one cell) and
+      also grants 50 turns of invincibility. While invincible a side's
+      head/body case is INVERTED on the board (lowercase head, UPPERCASE
+      body) -- that's a parsing decision, not a game-state one, so
+      `Board.from_turn` takes `inverted_sides` (which letters are
+      currently drawn flipped) from the caller, who reads it off
+      `invincible_1`/`invincible_2` in turn_data the same way it already
+      reads multipliers (see bot.py).
 
 This module stays legacy-compatible: a board with only '*' still parses
-and plays fine (target_digit is simply None, meaning "any food cell is
-correct" -- see Board.target_digit).
+and plays fine as shot food with no snake-specific owner (see
+Board.shot_food and GameState's shot-food landing).
 """
 
 from .digits import next_target_digit
 
 EMPTY = ' '
-LEGACY_FOOD = '*'
+SHOT_FOOD = '*'
+STAR = '⭐'
 PICKUP = 'X'
 WALL = '#'
 BIG_BOMB = '\U0001F4A3'    # 💣
@@ -101,12 +118,9 @@ def parse_grid(board_str, rows, cols):
 
 
 def _classify_food_char(ch, pos, food):
-    """Handles '*' / a food digit / empty space. Returns True if the
+    """Handles a food digit / empty space. Returns True if the
     character was one of those."""
     if ch == EMPTY:
-        return True
-    if ch == LEGACY_FOOD:
-        food[pos] = None  # None = "no ordering, any food is correct"
         return True
     if ch in DIGITS:
         food[pos] = int(ch)
@@ -137,15 +151,31 @@ def _classify_bomb_char(ch, pos, big_bombs, small_bombs):
     return False
 
 
-def _classify_special_char(ch, pos, food, pickups, walls, big_bombs, small_bombs):
-    """Handles '*' / a food digit / 'X' / '#' / a bomb / empty space.
-    Returns True if the character was one of those (nothing left for
-    the caller to do)."""
+def _classify_star_or_shot_char(ch, pos, stars, shot_food):
+    """Handles the v10 star and the v9 shot-food '*'. Returns True if
+    the character was one of those."""
+    if ch == STAR:
+        stars.append(pos)
+        return True
+    if ch == SHOT_FOOD:
+        shot_food.append(pos)
+        return True
+    return False
+
+
+def _classify_special_char(ch, pos, food, pickups, walls, bombs, resources):
+    """Handles a food digit / 'X' / '#' / a bomb / the star / shot food
+    / empty space. Returns True if the character was one of those
+    (nothing left for the caller to do)."""
+    big_bombs, small_bombs = bombs
+    stars, shot_food = resources
     if _classify_food_char(ch, pos, food):
         return True
     if _classify_marker_char(ch, pos, pickups, walls):
         return True
-    return _classify_bomb_char(ch, pos, big_bombs, small_bombs)
+    if _classify_bomb_char(ch, pos, big_bombs, small_bombs):
+        return True
+    return _classify_star_or_shot_char(ch, pos, stars, shot_food)
 
 
 def _classify_tail_food_char(ch, pos, tail_food):
@@ -159,54 +189,71 @@ def _classify_tail_food_char(ch, pos, tail_food):
     return True
 
 
-def _classify_snake_char(ch, pos, heads, bodies):
-    if ch.isupper():
-        heads[ch] = pos
-    elif ch.islower():
-        bodies.setdefault(ch, set()).add(pos)
+def _classify_snake_char(ch, pos, heads, bodies, inverted_sides):
+    """Normally uppercase is a head, lowercase is body. v10: while a
+    side is invincible it's drawn inverted (lowercase head, UPPERCASE
+    body), so `inverted_sides` (a set of 'A'/'B') flips that reading
+    for just that side -- the output (heads['A']/bodies['a']) always
+    means the same thing regardless of how it was drawn."""
+    side = ch.upper()
+    if side not in ('A', 'B'):
+        return
+    is_head_char = ch.isupper()
+    if side in inverted_sides:
+        is_head_char = not is_head_char
+    if is_head_char:
+        heads[side] = pos
+    else:
+        bodies.setdefault(side.lower(), set()).add(pos)
 
 
-def _classify_cell(ch, pos, food, pickups, walls, bombs, tail_food, heads, bodies):
-    big_bombs, small_bombs = bombs
-    if _classify_special_char(ch, pos, food, pickups, walls, big_bombs, small_bombs):
+def _classify_cell(ch, pos, food, pickups, walls, bombs, resources,
+                    tail_food, heads, bodies, inverted_sides):
+    if _classify_special_char(ch, pos, food, pickups, walls, bombs, resources):
         return
     if _classify_tail_food_char(ch, pos, tail_food):
         return
-    _classify_snake_char(ch, pos, heads, bodies)
+    _classify_snake_char(ch, pos, heads, bodies, inverted_sides)
 
 
 class Board:
     """Immutable snapshot of one turn's grid, already classified into
     heads / bodies (unordered at this stage) / food / pickups / walls /
-    bombs / tail_food."""
+    bombs / tail_food / stars / shot_food."""
 
     __slots__ = ('rows', 'cols', 'heads', 'bodies', 'food', 'pickups',
-                 'walls', 'big_bombs', 'small_bombs', 'tail_food')
+                 'walls', 'big_bombs', 'small_bombs', 'tail_food',
+                 'stars', 'shot_food')
 
     def __init__(self, rows, cols, heads, bodies, food, pickups, walls=(),
-                 tail_food=None, big_bombs=(), small_bombs=()):
+                 tail_food=None, big_bombs=(), small_bombs=(),
+                 stars=(), shot_food=()):
         self.rows = rows
         self.cols = cols
         self.heads = heads          # {'A': (r,c), 'B': (r,c)}
         self.bodies = bodies        # {'a': {(r,c), ...}, 'b': {...}} -- UNORDERED
-        self.food = food            # {(r,c): digit_or_None}
+        self.food = food            # {(r,c): digit}
         self.pickups = pickups      # [(r,c), ...]
         self.walls = walls          # [(r,c), ...] -- the current '#' hazard, if any
         self.tail_food = tail_food or {}  # {(r,c): 'A'|'B'} -- who may eat it
         self.big_bombs = big_bombs      # [(r,c), ...] -- 5x5 blast each
         self.small_bombs = small_bombs  # [(r,c), ...] -- 3x3 blast each
+        self.stars = stars              # [(r,c), ...] -- v10, usually 0 or 1
+        self.shot_food = shot_food      # [(r,c), ...] -- v9, either side may eat
 
     @classmethod
-    def from_turn(cls, board_str, rows, cols):
+    def from_turn(cls, board_str, rows, cols, inverted_sides=()):
         grid = parse_grid(board_str, rows, cols)
         food, pickups, walls, tail_food, heads, bodies = {}, [], [], {}, {}, {}
-        big_bombs, small_bombs = [], []
+        big_bombs, small_bombs, stars, shot_food = [], [], [], []
+        inverted_sides = set(inverted_sides)
         for r in range(rows):
             for c in range(cols):
                 _classify_cell(grid[r][c], (r, c), food, pickups, walls,
-                                (big_bombs, small_bombs), tail_food, heads, bodies)
+                                (big_bombs, small_bombs), (stars, shot_food),
+                                tail_food, heads, bodies, inverted_sides)
         return cls(rows, cols, heads, bodies, food, pickups, walls,
-                    tail_food, big_bombs, small_bombs)
+                    tail_food, big_bombs, small_bombs, stars, shot_food)
 
     def in_bounds(self, pos):
         r, c = pos

@@ -1,7 +1,14 @@
 """
 Evaluator: heuristic score for one GameState from one side's
 perspective. Combines territory control, the reachable/winnable target
-digit, reachable pickups, length, and an exit-count safety penalty.
+digit (plus shot food and the star, same economics, v9/v10), reachable
+pickups, length, and an exit-count safety penalty.
+
+v10: all of the defensive terms (exit safety, bomb proximity) are
+skipped while `self.me` is invincible in the evaluated state -- none
+of what they're steering away from costs anything in that state (see
+GameState's invincible-branch rewards), so penalizing it would just be
+wrong, not merely redundant.
 
 Weight history: pickup weight used to sit far below the target-digit
 weight (40/30 vs 90/80), which meant the bot only grabbed an X when it
@@ -105,6 +112,26 @@ def _tail_food_term(state, me, dist_me, dist_opp, my_mult, decay):
     return value / (1.0 + decay * d_me) / 100.0
 
 
+def _shot_food_term(state, dist_me, dist_opp, my_mult, decay):
+    # v9: shot food (and v10's star, same economics) scores like a
+    # correct digit=1 and is up for grabs by either side -- without
+    # this pull, a shot's real upside (the free food it creates) is
+    # invisible to the search that decides whether to take it.
+    d_me = _closest_winnable(state.shot_food, dist_me, dist_opp)
+    if d_me is None:
+        return 0.0
+    value = 100.0 * min(my_mult, _PULL_MULTIPLIER_CAP)
+    return value / (1.0 + decay * d_me) / 100.0
+
+
+def _star_term(state, dist_me, dist_opp, my_mult, decay):
+    d_me = _closest_winnable(state.stars, dist_me, dist_opp)
+    if d_me is None:
+        return 0.0
+    value = 100.0 * min(my_mult, _PULL_MULTIPLIER_CAP)
+    return value / (1.0 + decay * d_me) / 100.0
+
+
 def _pickup_term(pickups, dist_me, dist_opp, decay):
     total = 0.0
     for p in pickups:
@@ -183,15 +210,22 @@ class Evaluator:
         target_w, pickup_w, territory_w, decay = self._weights(state.remaining_moves)
         target_digit = state.target_digit()
         my_mult = state.multipliers.get(self.me, 1)
+        invincible_me = state.invincible.get(self.me, 0) > 0
 
         score = (my_t - opp_t) * territory_w
         score += _target_term(state, target_digit, dist_me, dist_opp,
                                my_mult, decay) * target_w
         score += _tail_food_term(state, self.me, dist_me, dist_opp,
                                   my_mult, decay) * target_w
+        score += _shot_food_term(state, dist_me, dist_opp, my_mult, decay) * target_w
+        score += _star_term(state, dist_me, dist_opp, my_mult, decay) * target_w
         score += _pickup_term(state.pickups, dist_me, dist_opp, decay) * pickup_w
         score += self._multiplier_edge_term(state)
         score += (len(my_body) - len(opp_body)) * _LENGTH_WEIGHT
-        score += _exit_penalty(my_head, walls, state.rows, state.cols)
-        score += _bomb_penalty(my_head, state.big_bombs, state.small_bombs)
+        if not invincible_me:
+            # v10: a wrong-digit-style trap or a bomb's blast square
+            # costs nothing while invincible, so there's nothing here
+            # to steer away from.
+            score += _exit_penalty(my_head, walls, state.rows, state.cols)
+            score += _bomb_penalty(my_head, state.big_bombs, state.small_bombs)
         return score

@@ -10,12 +10,14 @@ def _mk(rows_str, rows, cols):
     return Board.from_turn(rows_str, rows, cols)
 
 
-def test_legacy_star_food_has_no_target_digit():
+def test_shot_food_parsed_separately_not_as_digit_food():
+    # v9: '*' is shot food, not tied to the digit sequence at all.
     board_str = "|A * |\n|    |\n|    |\n|    |"
     b = _mk(board_str, 4, 4)
-    assert (0, 2) in b.food and b.food[(0, 2)] is None
+    assert (0, 2) not in b.food
+    assert b.shot_food == [(0, 2)]
     assert b.target_digit() is None
-    print('test_legacy_star_food_has_no_target_digit: OK')
+    print('test_shot_food_parsed_separately_not_as_digit_food: OK')
 
 
 def test_digits_parsed_and_target_is_cyclic_gap():
@@ -101,8 +103,42 @@ def test_heads_and_bodies_parsed():
     print('test_heads_and_bodies_parsed: OK')
 
 
+def test_star_parsed_separately_from_everything_else():
+    board_str = "|A⭐|\n|  |"
+    b = _mk(board_str, 2, 2)
+    assert b.stars == [(0, 1)]
+    assert b.heads == {'A': (0, 0)}
+    print('test_star_parsed_separately_from_everything_else: OK')
+
+
+def test_board_without_star_has_empty_list():
+    board_str = "|A |\n|  |"
+    b = _mk(board_str, 2, 2)
+    assert b.stars == []
+    print('test_board_without_star_has_empty_list: OK')
+
+
+def test_invincible_side_is_read_inverted():
+    # v10: while A is invincible it's drawn lowercase head / UPPERCASE
+    # body -- 'a' is A's head, 'B...' (upper) is A's body. B (not
+    # invincible) is read normally.
+    board_str = "|aAA|\n|Bb |"
+    b = Board.from_turn(board_str, 2, 3, inverted_sides={'A'})
+    assert b.heads == {'A': (0, 0), 'B': (1, 0)}
+    assert b.bodies == {'a': {(0, 1), (0, 2)}, 'b': {(1, 1)}}
+    print('test_invincible_side_is_read_inverted: OK')
+
+
+def test_board_without_inverted_sides_reads_normally():
+    board_str = "|Aa|\n|bB|"
+    b = Board.from_turn(board_str, 2, 2)
+    assert b.heads == {'A': (0, 0), 'B': (1, 1)}
+    assert b.bodies == {'a': {(0, 1)}, 'b': {(1, 0)}}
+    print('test_board_without_inverted_sides_reads_normally: OK')
+
+
 if __name__ == '__main__':
-    test_legacy_star_food_has_no_target_digit()
+    test_shot_food_parsed_separately_not_as_digit_food()
     test_digits_parsed_and_target_is_cyclic_gap()
     test_digits_simple_ascending_window()
     test_pickup_parsed_separately_from_food()
@@ -113,4 +149,8 @@ if __name__ == '__main__':
     test_bombs_parsed_separately_from_everything_else()
     test_board_without_bombs_has_empty_lists()
     test_heads_and_bodies_parsed()
+    test_star_parsed_separately_from_everything_else()
+    test_board_without_star_has_empty_list()
+    test_invincible_side_is_read_inverted()
+    test_board_without_inverted_sides_reads_normally()
     print('ALL BOARD TESTS PASSED')

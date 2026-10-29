@@ -4,8 +4,17 @@ by the real reward each ply earns plus Evaluator's heuristic score of
 the resulting position, with PickupPlanner able to override the choice
 when a reachable pickup is worth committing to (see pickup_rush.py).
 
-bfs.py / evaluator.py / pickup_rush.py hold the pieces this module
-assembles; kept split up so each stays small and single-purpose.
+bfs.py / evaluator.py / pickup_rush.py / shooting.py hold the pieces
+this module assembles; kept split up so each stays small and
+single-purpose.
+
+v9 (shooting): `choose_action` is the real top-level entry point
+(SnakeBot calls this, not `choose_direction`) -- it first asks
+ShootPlanner whether a clean, worthwhile shot is on the table (needs
+the real current score, which GameState doesn't track -- see bot.py),
+and only falls back to the ordinary move decision (`choose_direction`,
+still here on its own for anything that only cares about movement,
+tests included) when it isn't.
 
 A real match log showed the bot stuck circling the same 4 cells for
 ~50 turns despite the rest of the board being wide open: with no
@@ -24,6 +33,7 @@ from .bfs import in_bounds
 from .evaluator import Evaluator
 from .game_state import DIRECTIONS
 from .pickup_rush import PickupPlanner
+from .shooting import ShootPlanner
 
 # Re-exported for backwards compatibility (older tests/tools import
 # these straight from strategy).
@@ -40,6 +50,7 @@ class SnakeStrategy:
         self.evaluator = Evaluator(me, opp)
         self.opp_evaluator = Evaluator(opp, me)
         self.pickup_planner = PickupPlanner(me, opp)
+        self.shoot_planner = ShootPlanner(me, opp)
         self._recent_heads = deque(maxlen=_RECENT_HEADS_REMEMBERED)
 
     def _best_opponent_reply(self, state):
@@ -108,3 +119,16 @@ class SnakeStrategy:
         direction = pickup_dir or best_dir or my_moves[0][0]
         self._record_head(direction, my_moves)
         return direction
+
+    def choose_action(self, state, my_score):
+        """Top-level entry point (see bot.py): returns ('shoot', dir)
+        when ShootPlanner finds a worthwhile shot, else ('move', dir)
+        from the ordinary choose_direction."""
+        my_moves = state.legal_moves(self.me, self.opp)
+        if my_moves:
+            _, best_score = self._best_of(self._score_all(my_moves))
+            shoot_dir = self.shoot_planner.suggest(
+                state, my_score, self._score_my_move, best_score)
+            if shoot_dir is not None:
+                return 'shoot', shoot_dir
+        return 'move', self.choose_direction(state)

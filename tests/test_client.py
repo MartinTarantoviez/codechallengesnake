@@ -15,12 +15,13 @@ def run(coro):
 
 
 class FakeBot:
-    def __init__(self, direction='up'):
+    def __init__(self, direction='up', action='move'):
         self.direction = direction
+        self.action = action
         self.forgotten = []
 
     def choose_move(self, data):
-        return self.direction
+        return self.action, self.direction
 
     def forget_game(self, game_id):
         self.forgotten.append(game_id)
@@ -103,6 +104,21 @@ def test_handle_event_your_turn_sends_a_move():
     assert sent['action'] == 'move'
     assert sent['data']['direction'] == 'left'
     print('test_handle_event_your_turn_sends_a_move: OK')
+
+
+def test_handle_event_your_turn_sends_a_shoot():
+    # v9: the bot can choose to shoot instead of moving.
+    bot = FakeBot(direction='right', action='shoot')
+    client = MatchClient(bot, logger=GameLogger(logs_dir=Path(tempfile.gettempdir())))
+    ws = FakeWebSocket()
+    request = {'event': 'your_turn',
+               'data': {'game_id': 'g1', 'turn_token': 't1', 'side': 'A',
+                        'rows': 5, 'cols': 5, 'board': '|A    |'}}
+    run(client._handle_event(ws, request))
+    sent = json.loads(ws.sent[-1])
+    assert sent['action'] == 'shoot'
+    assert sent['data']['direction'] == 'right'
+    print('test_handle_event_your_turn_sends_a_shoot: OK')
 
 
 def test_handle_event_challenge_accepts_it():
@@ -239,6 +255,7 @@ ALL_TESTS = [
     test_game_logger_forget_clears_history,
     test_game_logger_write_handles_oserror_gracefully,
     test_handle_event_your_turn_sends_a_move,
+    test_handle_event_your_turn_sends_a_shoot,
     test_handle_event_challenge_accepts_it,
     test_handle_event_error_logs_and_does_not_crash,
     test_handle_event_game_over_writes_log_and_forgets_bot_state,

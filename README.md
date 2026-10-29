@@ -30,8 +30,10 @@ Flags:
 ```
 snake/
   board.py       Board: parses the raw board string into heads/bodies/
-                 food/pickups/walls/tail_food/bombs. Knows the v3 cyclic
-                 "next correct digit" rule (via digits.py).
+                 food/pickups/walls/tail_food/bombs/stars/shot_food.
+                 Knows the v3 cyclic "next correct digit" rule (via
+                 digits.py) and v10's per-side inverted head/body
+                 drawing while invincible.
   digits.py      The v3 cyclic "next correct digit" rule in one place,
                  shared by Board and GameState so it's never duplicated.
   ordering.py    BodyOrderer: turns each snake's unordered body cells
@@ -43,43 +45,53 @@ snake/
   bfs.py         Generic BFS distance / territory utilities shared by
                  the evaluator and the pickup-rush planner.
   game_state.py  GameState: one turn's ordered snapshot, plus
-                 simulate()/legal_moves() -- the only place that knows
-                 the actual scoring rules (correct digit / wrong digit
-                 / pickup / multiplier / crash+tail-food (v7) / bomb
-                 explosions (v8)).
+                 simulate()/legal_moves()/simulate_shoot()/
+                 shoot_moves() -- the only place that knows the actual
+                 scoring rules (correct digit / wrong digit / pickup /
+                 multiplier / crash+tail-food (v7) / bomb explosions
+                 (v8) / shooting (v9) / the star and invincibility
+                 (v10)).
   evaluator.py   Evaluator: heuristic score for a GameState (territory,
-                 target-digit pull, pickup pull, length, exit safety,
-                 bomb-proximity safety).
+                 target-digit/tail-food/shot-food/star pull, pickup
+                 pull, length, exit safety, bomb-proximity safety --
+                 the last two skipped while invincible, since neither
+                 costs anything then).
   pickup_rush.py PickupPlanner: computes an actual BFS shortest-path
-                 route to the single best reachable X pickup and steers
-                 along it -- see "Pickup strategy" below.
+                 route to the single best reachable X pickup or star
+                 and steers along it -- see "Pickup strategy" below.
+  shooting.py    ShootPlanner: decides whether a v9 shot is worth its
+                 flat 5000-point cost right now (a clean, meaningfully
+                 damaging hit whose estimated value beats the best
+                 ordinary move).
   strategy.py    SnakeStrategy: the 2-ply search (my move -> opponent's
-                 best reply) that assembles Evaluator + PickupPlanner
-                 into a final direction.
+                 best reply) that assembles Evaluator + PickupPlanner +
+                 ShootPlanner into a final action (`choose_action`).
   bot.py         SnakeBot: the facade. Owns per-game history (previous
-                 heads, multipliers) and turns turn_data -> direction.
+                 heads, multipliers, invincibility) and turns
+                 turn_data -> (action, direction).
   client.py      MatchClient + GameLogger: websocket loop and per-game
                  log files, independent of game logic (testable with
                  plain dicts, no network).
   main.py        CLI entry point.
 tests/
-  test_board.py     board parsing: legacy '*', v3 digits + cyclic
-                     target, v4 pickups, v5 walls, v7 tail food, v8
-                     bombs.
+  test_board.py     board parsing: digits + cyclic target, v4 pickups,
+                     v5 walls, v7 tail food, v8 bombs, v9 shot food, v10
+                     star + inverted invincible parsing.
   test_ordering.py  neck/tail ordering, including the exact ambiguous
                      coiled-body shape that used to make the bot walk
                      into itself.
-  test_strategy.py  scoring rules (grow/penalty/pickup/multiplier) and
-                     that the bot actually prefers the correct digit and
-                     avoids wrong ones when a safer option exists.
+  test_strategy.py  scoring rules (grow/penalty/pickup/multiplier/
+                     shooting/invincibility) and that the bot actually
+                     prefers the correct digit, avoids wrong ones, and
+                     shoots/moves sensibly when a safer option exists.
+  test_shooting.py  ShootPlanner's shoot-or-not decision in isolation.
   test_coverage.py  full edge-case coverage ported from the pre-refactor
-                     test suite (58 cases): board parsing edge cases,
-                     ordering fallbacks, BFS/territory, move legality,
+                     test suite: board parsing edge cases, ordering
+                     fallbacks, BFS/territory, move legality,
                      evaluation, and choose_direction's search.
   test_bot.py       end-to-end: replays two real recorded matches
                      (logs/) through SnakeBot.choose_move() and asserts
-                     it never raises and always returns a legal
-                     direction.
+                     it never raises and always returns a legal action.
 logs/            Match logs, one per game, written automatically at
                  game_over (git-ignored).
 ```
@@ -90,24 +102,34 @@ case; no test framework dependency).
 
 Code quality: every function/method/module is cyclomatic-complexity
 rank A (`xenon --max-absolute A --max-modules A --max-average A snake/`
-passes clean -- 109 blocks, average complexity 2.7). Modules are kept
+passes clean -- 161 blocks, average complexity 2.7). Modules are kept
 small and single-purpose specifically so this holds as the rules keep
 changing; when adding a new rule, prefer a new small function/module
 over growing an existing branch-heavy one.
 
 ## Protocol
 
-Each turn arrives as a `your_turn` event; reply with a `move` action:
+Each turn arrives as a `your_turn` event; reply with either a `move`
+action:
 
 ```json
 {"action": "move", "data": {"game_id": "...", "turn_token": "...", "direction": "up"}}
 ```
 
-`direction` is one of `up` / `down` / `left` / `right`. The board is a
-string of `rows` lines wrapped in `|...|`: `A`/`B` are snake heads,
-`a`/`b` their bodies, empty is a space. Board size varies per match
-(each of `rows`/`cols` is 12-20, **20-30 since v8**) -- always read
-them from `turn_data`, never hardcode 15.
+or, since **v9 (21 Oct 2026)**, a `shoot` action instead (same shape,
+same `game_id`/`turn_token`) that costs the current turn's move:
+
+```json
+{"action": "shoot", "data": {"game_id": "...", "turn_token": "...", "direction": "right"}}
+```
+
+`direction` is one of `up` / `down` / `left` / `right` either way. The
+board is a string of `rows` lines wrapped in `|...|`: `A`/`B` are snake
+heads, `a`/`b` their bodies, empty is a space -- **except while a side
+is invincible (v10)**, when that side's own case is inverted
+(lowercase head, UPPERCASE body); see "Star / invincibility" below.
+Board size varies per match (each of `rows`/`cols` is 12-20, **20-30
+since v8**) -- always read them from `turn_data`, never hardcode 15.
 
 ### Food and scoring (current rules, see `docs` link below for the source)
 
@@ -181,18 +203,73 @@ them from `turn_data`, never hardcode 15.
     `Array.from(row)` in JS, `row.codePoints()` in Java, `[]rune(row)`
     in Go. Python's `str` already iterates by code point, so nothing
     special is needed there.
+- **Shooting (v9, since 21 Oct 2026):** instead of moving, send a
+  `shoot` action with a direction (see Protocol above). It always costs
+  a flat **5000 points**, hit or miss -- shooting below 5000 is an
+  invalid action (-500, doesn't fire).
+  - The shot is **instant** and travels in a straight line from your
+    head. It passes straight over your own body, food, `X`, bombs, the
+    star and shot food without touching any of it, and stops at the
+    board edge, a `#` wall (walls are cover), or the **first** cell
+    belonging to the opponent (body or head) -- it can never hit your
+    own snake.
+  - A hit **cuts the opponent from the impacted cell to the tip of
+    their tail**; hitting the head itself cuts their *whole* body,
+    leaving them with just the head. Every cut cell becomes **shot
+    food** (`*`) that *either* snake may eat for **+100 x their own
+    multiplier** (grows one cell, not part of the digit sequence,
+    doesn't respawn) -- except any cut cell that lands inside a bomb's
+    blast square, which just vanishes instead.
+  - Being shot is **not a crash**: no score wipe, doesn't count as a
+    first crash, the victim doesn't even move -- they just lose length
+    (and may want to race back for their own cut-off tail).
+  - An **invincible** target can't be cut at all (v10) -- the shooter
+    still pays the 5000.
+- **Star / invincibility (v10, since 28 Oct 2026):** a single star
+  (⭐, `U+2B50`) can be on the board (never more than one until the
+  final frenzy, see below). Eating it works exactly like eating shot
+  food (**+100 x multiplier**, grows one cell) and additionally sets
+  that side's invincibility counter to **50** of their own turns
+  (`invincible_1`/`invincible_2` in `turn_data`; moving, shooting, and
+  an invalid action/timeout all count as one of your own turns --
+  eating a second star while still invincible just **resets** the
+  counter to 50, it doesn't stack). While invincible:
+  - A side's head/body **case is inverted** on the board: lowercase
+    head (`a`/`b`), UPPERCASE body (`A`/`B`). `Board.from_turn` needs
+    to be told which sides are currently inverted (see `bot.py`) or
+    it'll misread a body cell as a second head.
+  - Running into the board edge, a `#` wall, or your own body costs
+    **nothing at all**: no -500, no score wipe, no tail shed, you just
+    stay exactly where you were. A bomb's blast and a wrong digit are
+    likewise entirely free (still consumes the cell/digit copy as
+    usual, just no penalty). An invalid action costs nothing either
+    (though 10 timeouts in a row still loses the match).
+  - Running **into the opponent's body** cuts them for free, exactly
+    like a successful shot, while you simply stay put (no cost to you
+    at all, not even a lost turn's movement). The reverse -- a
+    non-invincible side running into an invincible one -- is just an
+    ordinary crash for whoever moved, *unless they're invincible too*,
+    in which case they do the cutting instead.
+  - Shots can't cut an invincible snake either (the shooter still pays
+    5000).
+  - The first star appears after round 20, equidistant from both
+    heads (a fair race); while anyone is invincible no new star
+    appears; the next one shows up 20 rounds after that invincibility
+    ends. In the **final 100 moves** (right as the bombs disappear) a
+    "frenzy" fills the board with **10 stars at once**, each replaced
+    the instant it's eaten.
 - `turn_data` includes `board_size` (`"15x18"`), and from the
-  multiplier rule on, `multiplier_1`/`multiplier_2`.
+  multiplier rule on, `multiplier_1`/`multiplier_2`; from v10,
+  `invincible_1`/`invincible_2` (remaining turns, 0 = not invincible).
 
 Full source: the challenge's own `/how-to-play` page (ask whoever set
 up your bot token for the current URL -- it's the canonical source and
 gets updated when rules change; this README mirrors it as of the rules
-version in effect on 2026-10-16 -- **note**: the PDF copy of the rules
-in this repo (`Snake — How to play.pdf`) was corrupted/truncated when
-last saved (cuts off mid-document at page 4 of 10, right as it reaches
-the example-log section); the rule text above (through v7) was
-recovered directly from the PDF's compressed content streams, and v8
-was transcribed from the professor's Slack announcement instead since
+version in effect on 2026-10-29 -- **note**: the PDF copy of the rules
+in this repo (`Snake — How to play.pdf`) is still only 3 pages (through
+v8); v9 and v10 were transcribed from the professor's Slack
+announcements (including worked examples -- shooting, wall cover, a
+head hit, star invincibility, crashes/ramming while invincible) since
 no updated PDF has been saved yet. Worth re-saving a fresh, complete
 copy next time the rules page is open.
 
@@ -223,6 +300,19 @@ copy next time the rules page is open.
   risks it shouldn't.
 - **Outgoing challenge protocol** (`--challenge`): unconfirmed, see
   `client.py`'s `challenge_user` docstring.
+- **Shoot-value heuristic (v9)**: `ShootPlanner`'s estimate of a cut's
+  worth (`shooting.py`'s `CUT_CELL_VALUE`) is an optimistic guess, not
+  a real reward -- it assumes we'd actually win the race to every cut
+  cell, which won't always hold. Worth retuning once real match logs
+  show the bot actually taking shots (or, more likely at first, show
+  it correctly declining to).
+- **Both sides invincible at once, ramming each other (v10)**: the
+  rules text and examples only cover one side being invincible at a
+  time; `GameState._advance` resolves a double-invincible head-on
+  collision by letting whichever side's `simulate` call runs first cut
+  the other (order depends on which snake the 2-ply search is
+  evaluating), which is a guess, not a confirmed rule. Rare enough in
+  practice that it hasn't seemed worth a real match log yet.
 
 ## Strategy
 
@@ -232,15 +322,19 @@ copy next time the rules page is open.
    on turn 1.
 2. **Simulate.** `GameState.simulate` advances one snake one step and
    returns the real point reward (correct-digit growth+score,
-   wrong-digit penalty, pickup score+multiplier bump, tail-food
-   score+growth). Since v7 a crash (wall/body/edge/opponent, except a
-   snake's own vacating tail) is no longer fatal: it returns `None`
-   only if the snake itself doesn't exist in the state; a crash instead
-   leaves the snake in place, sheds its tail, and charges the flat
-   crash penalty (see the "Crashes" rule above). Since v8, landing
-   within a bomb's blast square *also* charges that same flat penalty,
-   but as a normal move (eats the cell, keeps the tail) -- see "Bombs"
-   above.
+   wrong-digit penalty, pickup score+multiplier bump, tail-food/shot-
+   food/star score+growth). Since v7 a crash (wall/body/edge/opponent,
+   except a snake's own vacating tail) is no longer fatal: it returns
+   `None` only if the snake itself doesn't exist in the state; a crash
+   instead leaves the snake in place, sheds its tail, and charges the
+   flat crash penalty (see the "Crashes" rule above) -- unless this
+   side is invincible (v10), in which case it's entirely free and
+   nothing sheds (`GameState._free_stay`). Since v8, landing within a
+   bomb's blast square *also* charges that same flat penalty (skipped
+   if invincible), but as a normal move (eats the cell, keeps the
+   tail). `GameState.simulate_shoot` is the v9 alternative: it never
+   moves the head, always costs the flat shooting fee, and cuts the
+   opponent's body into shot food on a hit (see "Shooting" above).
 3. **Evaluate.** For a resulting position, `Evaluator` scores:
    - **Territory**: simultaneous BFS from both heads (a la Voronoi) --
      more reachable-first cells is safer and keeps options open.
@@ -248,8 +342,9 @@ copy next time the rules page is open.
      toward whichever reachable copy (v6) is closest; value decays with
      BFS distance and is zeroed out if the opponent would reach it
      first.
-   - **Tail food** (v7) value: same shape as the target digit, for any
-     reachable tail food this side is actually allowed to eat.
+   - **Tail food / shot food / star** value (v7/v9/v10): same shape as
+     the target digit -- shot food and the star are open to either
+     side, so there's no "mine only" filter the way tail food has.
    - **Pickup (`X`)** value: same decay-with-distance shape, weighted
      lower than food since its main value (permanent multiplier) is
      long-run rather than a one-off score.
@@ -259,26 +354,37 @@ copy next time the rules page is open.
    - **Bomb proximity** (v8): a smaller penalty than the real explosion
      reward, so the evaluated position (after both plies) also prefers
      to sit outside every blast square, not just the one step actually
-     being chosen right now.
-4. **Choose.** `SnakeStrategy` does a 2-ply search: for each of our
-   legal moves, assume the opponent then plays *their* best reply (by
-   their own evaluation), and score our move as `our immediate reward +
-   evaluation of the position after their reply`. Picks the best.
-   Since v7 a crash is survivable, `legal_moves` is essentially never
-   empty (only if the snake itself is missing from the state), so the
-   old "every move is immediately fatal" fallback is now effectively
-   dead code kept as a defensive no-op.
-5. **Override for a worthwhile pickup.** `PickupPlanner` separately
-   computes the single most valuable *reachable and winnable* `X`
-   pickup (skips it if the opponent would get there first, or if
-   there's not enough of the match left to cash in a bigger
-   multiplier), then finds the actual BFS-shortest safe route to it
-   (treating wrong digits as soft obstacles to route around). If that
-   route's own 2-ply score isn't more than a safety margin worse than
-   the best move found in step 4, the bot commits to that route's next
-   step instead -- this is what lets it actually detour for a pickup
-   several cells away, rather than only grabbing one that happens to be
-   on the way to something else.
+     being chosen right now. Skipped entirely (v10) when this side is
+     invincible in the evaluated state, since a blast costs nothing
+     then -- same for the exit penalty.
+4. **Choose.** `SnakeStrategy.choose_direction` does a 2-ply search:
+   for each of our legal moves, assume the opponent then plays *their*
+   best reply (by their own evaluation), and score our move as `our
+   immediate reward + evaluation of the position after their reply`.
+   Picks the best. Since v7 a crash is survivable, `legal_moves` is
+   essentially never empty (only if the snake itself is missing from
+   the state), so the old "every move is immediately fatal" fallback is
+   now effectively dead code kept as a defensive no-op.
+5. **Override for a worthwhile pickup or star.** `PickupPlanner`
+   separately computes the single most valuable *reachable and
+   winnable* `X` pickup or star together (skips a target the opponent
+   would get to first, or if there's not enough of the match left to
+   cash in a bigger multiplier), then finds the actual BFS-shortest
+   safe route to it (treating wrong digits as soft obstacles to route
+   around). If that route's own 2-ply score isn't more than a safety
+   margin worse than the best move found in step 4, the bot commits to
+   that route's next step instead -- this is what lets it actually
+   detour for a pickup several cells away, rather than only grabbing
+   one that happens to be on the way to something else.
+6. **Override for a worthwhile shot (v9).** `SnakeStrategy.choose_action`
+   (the real top-level entry point SnakeBot calls, not `choose_direction`)
+   asks `ShootPlanner` first: if we can afford the flat 5000-point fee
+   (from the real current score in `turn_data`, which `GameState` itself
+   never tracks) and some direction cuts at least a few cells off the
+   opponent, it estimates that cut's value (every cell is worth up to
+   100 x our multiplier as shot food) on top of the usual 2-ply score and
+   only shoots if that genuinely beats the best move from step 4 --
+   otherwise it falls through to the ordinary move decision.
 
 ### Why a separate pickup planner instead of just weighting pickups higher
 

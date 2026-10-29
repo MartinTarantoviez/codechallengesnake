@@ -18,6 +18,11 @@ Safety: `SnakeStrategy` only takes the suggested direction if its own
 2-ply score isn't more than PICKUP_RUSH_SAFETY_MARGIN worse than the
 best move it found on its own, so a pickup that's only reachable by
 running into a dead end never gets chosen over playing it safe.
+
+v10: the star is rushed the exact same way, in the same candidate pool
+as 'X' pickups (`_pickup_target` races over `state.pickups +
+state.stars` together) -- both are a single cell worth detouring for
+when safe, so there's no need for a second planner.
 """
 
 from .bfs import bfs_distances, walls_for
@@ -72,7 +77,7 @@ class PickupPlanner:
     def _eligible_for_rush(self, state):
         if state.remaining_moves is not None and state.remaining_moves < MIN_REMAINING_TO_RUSH:
             return False
-        return bool(state.pickups)
+        return bool(state.pickups or state.stars)
 
     def _pickup_target(self, state):
         if not self._eligible_for_rush(state):
@@ -88,7 +93,8 @@ class PickupPlanner:
         dist_me = bfs_distances(my_head, walls, state.rows, state.cols)
         dist_opp = bfs_distances(opp_head, walls, state.rows, state.cols) if opp_head else {}
         horizon = state.remaining_moves if state.remaining_moves is not None else 200
-        target = _best_target(state.pickups, dist_me, dist_opp, horizon, self.last_target)
+        candidates = list(state.pickups) + list(state.stars)
+        target = _best_target(candidates, dist_me, dist_opp, horizon, self.last_target)
         self.last_target = target
         return target
 

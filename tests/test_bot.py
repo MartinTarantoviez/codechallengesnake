@@ -8,6 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from snake.bot import SnakeBot
 from snake.game_state import DIRECTIONS
 
+ACTIONS = ('move', 'shoot')
+
 LOG_DIR = Path(__file__).resolve().parent
 LOG_PATHS = [
     LOG_DIR / 'game_e2f368d6-a600-11f1-90e9-a2aaa38452dc.log',
@@ -28,6 +30,27 @@ def load_turns(path):
     return turns
 
 
+def _choose_move_or_none(bot, data, i):
+    try:
+        return bot.choose_move(data)
+    except Exception as e:
+        print(f'  turn {i}: EXCEPTION {e!r}')
+        return None
+
+
+def _run_one_turn(bot, data, i):
+    """Returns the elapsed seconds, or None if choose_move raised or
+    returned something malformed."""
+    t0 = time.time()
+    result = _choose_move_or_none(bot, data, i)
+    if result is None:
+        return None
+    action, direction = result
+    assert action in ACTIONS, action
+    assert direction in DIRECTIONS, direction
+    return time.time() - t0
+
+
 def run_against_match(path):
     turns = load_turns(path)
     print(f'Loaded {len(turns)} turns from {path.name}')
@@ -36,15 +59,11 @@ def run_against_match(path):
     total_time = 0.0
 
     for i, data in enumerate(turns):
-        t0 = time.time()
-        try:
-            direction = bot.choose_move(data)
-        except Exception as e:
-            print(f'  turn {i}: EXCEPTION {e!r}')
+        elapsed = _run_one_turn(bot, data, i)
+        if elapsed is None:
             errors += 1
-            continue
-        total_time += time.time() - t0
-        assert direction in DIRECTIONS, direction
+        else:
+            total_time += elapsed
 
     avg_ms = 1000 * total_time / max(1, len(turns))
     print(f'Ran SnakeBot.choose_move on {len(turns)} real board states, '
@@ -81,9 +100,10 @@ def test_choose_move_returns_up_when_own_head_missing_from_board():
         'board': '|     |\n|     |\n|  B  |\n|     |\n|     |',
         'remaining_moves': 100,
     }
-    direction = bot.choose_move(data)
+    action, direction = bot.choose_move(data)
     print('test_choose_move_returns_up_when_own_head_missing_from_board:',
           'OK' if direction == 'up' else 'FAILED')
+    assert action == 'move'
     assert direction == 'up'
 
 
@@ -107,6 +127,24 @@ def test_choose_move_reuses_same_strategy_instance_across_turns():
     print('test_choose_move_reuses_same_strategy_instance_across_turns: OK')
 
 
+def test_choose_move_reads_v10_invincibility_and_inverts_parsing():
+    # While A is invincible the board draws it inverted (lowercase
+    # head, UPPERCASE body) -- bot.py must read invincible_1/_2, map
+    # them to sides, and pass that through to Board.from_turn so 'a' is
+    # still read as A's head, not mistaken for a body cell.
+    bot = SnakeBot()
+    data = {
+        'game_id': 'g_inv', 'side': 'A', 'rows': 2, 'cols': 4,
+        'board': '|aAA |\n|   B|',
+        'remaining_moves': 200, 'invincible_1': 10, 'invincible_2': 0,
+    }
+    action, direction = bot.choose_move(data)
+    assert action in ACTIONS
+    assert direction in DIRECTIONS
+    assert bot._invincible['g_inv'] == {'A': 10, 'B': 0}
+    print('test_choose_move_reads_v10_invincibility_and_inverts_parsing: OK')
+
+
 def test_choose_move_reads_v4_multipliers_from_turn_data():
     bot = SnakeBot()
     data = {
@@ -114,7 +152,8 @@ def test_choose_move_reads_v4_multipliers_from_turn_data():
         'board': '|A     |\n|      |\n|      |\n|      |\n|      |\n|     B|',
         'remaining_moves': 200, 'multiplier_1': 3, 'multiplier_2': 2,
     }
-    direction = bot.choose_move(data)
+    action, direction = bot.choose_move(data)
+    assert action in ACTIONS
     assert direction in DIRECTIONS
     assert bot._multipliers['g_mult'] == {'A': 3, 'B': 2}
     print('test_choose_move_reads_v4_multipliers_from_turn_data: OK')
@@ -125,5 +164,6 @@ if __name__ == '__main__':
     test_forget_game_clears_history()
     test_choose_move_returns_up_when_own_head_missing_from_board()
     test_choose_move_reuses_same_strategy_instance_across_turns()
+    test_choose_move_reads_v10_invincibility_and_inverts_parsing()
     test_choose_move_reads_v4_multipliers_from_turn_data()
     print('ALL BOT INTEGRATION TESTS PASSED')

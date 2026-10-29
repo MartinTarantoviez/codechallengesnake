@@ -39,6 +39,30 @@ Scoring assumptions encoded here (from the rules PDF):
     a big bomb or 1 of a small one also sets it off. Same simplified
     flat penalty as a crash (see EXPLOSION_PENALTY), applied *in place
     of* that move's normal reward, not in addition to it.
+  - Shooting (v9, 21 Oct 2026): instead of moving, a side can shoot a
+    direction (`simulate_shoot`). It always costs SHOT_COST (5000),
+    hit or miss. The shot travels in a straight line from the head,
+    passing over everything of your own (body/food/pickups/bombs) and
+    stopping at the board edge, a '#' wall, or the first cell belonging
+    to the OPPONENT. A hit cuts the opponent from that cell to the tip
+    of their tail: every one of those cells becomes shot food ('*',
+    SHOT_FOOD_UNIT*multiplier, grows either side that eats it) except
+    any that land inside a bomb's blast square, which just vanish. An
+    invincible opponent can't be cut (the shooter still pays the cost).
+  - Star / invincibility (v10, 28 Oct 2026): eating a star scores like
+    shot food (SHOT_FOOD_UNIT*multiplier, grows) and sets that side's
+    `invincible` counter to STAR_INVINCIBLE_TURNS, ticking down by one
+    on each of that side's own turns (move or shoot -- see
+    `_decremented_invincible`). While invincible: running into the
+    board edge, a '#' wall, or your own body costs nothing at all (no
+    penalty, no body shed, no score change -- `_free_stay`/`_advance`'s
+    invincible branch); a bomb's blast and a wrong digit are likewise
+    free (`_reward_for`); and running INTO the opponent's body cuts
+    them for free, exactly like a successful shot, while the invincible
+    mover itself just stays put (see `_ram_opponent`). The reverse --
+    a non-invincible side running into an invincible one -- is a normal
+    crash for the one who moved, unless *they're* invincible too, in
+    which case they do the cutting instead.
 
 DIRECTIONS / in_bounds / neighbors4 live in board.py; this module only
 adds the *dynamic* (turn-to-turn) pieces: ordering, simulation, reward.
@@ -62,6 +86,9 @@ EXPLOSION_PENALTY = -500.0
 PICKUP_SCORE = 50.0
 CORRECT_DIGIT_UNIT = 100.0
 TAIL_FOOD_UNIT = 100.0
+SHOT_FOOD_UNIT = 100.0   # v9/v10: shot food and the star share this economics
+SHOT_COST = 5000.0
+STAR_INVINCIBLE_TURNS = 50
 CRASH_KEPT_BODY = 2  # body segments kept beyond the head after a crash
 BIG_BOMB_RADIUS = 2    # Chebyshev distance -- a 5x5 blast square
 SMALL_BOMB_RADIUS = 1  # Chebyshev distance -- a 3x3 blast square
@@ -74,9 +101,12 @@ def _chebyshev(a, b):
 # is_pickup: landed on an 'X'. is_tail_food_mine: landed on tail food you
 # may eat (grows + scores). is_tail_food_deny: landed on tail food only
 # the opponent may eat (your own shed tail) -- clears it, no effect.
+# is_shot_food: landed on v9 shot food ('*'). is_star: landed on the
+# v10 star (same economics as shot food, plus invincibility).
 Landing = namedtuple('Landing', 'is_correct is_wrong is_pickup '
-                                 'is_tail_food_mine is_tail_food_deny reward')
-_NOTHING = Landing(False, False, False, False, False, 0.0)
+                                 'is_tail_food_mine is_tail_food_deny '
+                                 'is_shot_food is_star reward')
+_NOTHING = Landing(False, False, False, False, False, False, False, 0.0)
 
 
 def _step(head, direction):
@@ -110,12 +140,16 @@ class GameState:
     walls: {(r,c), ...}  -- the current '#' hazard, if any
     tail_food: {(r,c): 'A'|'B'}  -- who may eat it, dropped by a crash
     big_bombs / small_bombs: [(r,c), ...]  -- 5x5 / 3x3 blast squares (v8)
+    stars: [(r,c), ...]  -- v10, grants invincibility (usually 0 or 1)
+    shot_food: [(r,c), ...]  -- v9, dropped by a shot, either side may eat
     multipliers: {'A': int, 'B': int}  -- starts at 1 each
+    invincible: {'A': int, 'B': int}  -- remaining turns, 0 = not invincible
     """
 
     def __init__(self, rows, cols, heads, bodies, food, pickups,
                  multipliers=None, remaining_moves=None, walls=None,
-                 tail_food=None, big_bombs=(), small_bombs=()):
+                 tail_food=None, big_bombs=(), small_bombs=(),
+                 stars=(), shot_food=(), invincible=None):
         self.rows = rows
         self.cols = cols
         self.heads = heads
@@ -128,16 +162,20 @@ class GameState:
         self.tail_food = tail_food if tail_food is not None else {}
         self.big_bombs = big_bombs
         self.small_bombs = small_bombs
+        self.stars = stars
+        self.shot_food = shot_food
+        self.invincible = invincible or {'A': 0, 'B': 0}
 
     @classmethod
     def from_board(cls, board, prev_heads=None, multipliers=None,
-                    remaining_moves=None):
+                    remaining_moves=None, invincible=None):
         ordered_bodies = BodyOrderer.order_all(board.heads, board.bodies, prev_heads)
         return cls(board.rows, board.cols, dict(board.heads), ordered_bodies,
                     dict(board.food), list(board.pickups),
                     multipliers, remaining_moves, set(board.walls),
                     dict(board.tail_food), list(board.big_bombs),
-                    list(board.small_bombs))
+                    list(board.small_bombs), list(board.stars),
+                    list(board.shot_food), invincible)
 
     def in_bounds(self, pos):
         r, c = pos
@@ -172,21 +210,36 @@ class GameState:
             return False
         return not (grows and new_head == tail)
 
+    def _is_invincible(self, head_letter):
+        return self.invincible.get(head_letter, 0) > 0
+
     def _tail_food_landing(self, new_head, head_letter):
         owner = self.tail_food[new_head]
         if owner == head_letter:
-            return Landing(False, False, False, True, False, TAIL_FOOD_UNIT)
-        return Landing(False, False, False, False, True, 0.0)
+            return Landing(False, False, False, True, False, False, False, TAIL_FOOD_UNIT)
+        return Landing(False, False, False, False, True, False, False, 0.0)
+
+    def _resource_landing(self, new_head):
+        """Landed on 'X' / shot food / a star -- or None for any of
+        those. Split out of _classify_landing to keep it xenon-A."""
+        if new_head in self.pickups:
+            return Landing(False, False, True, False, False, False, False, PICKUP_SCORE)
+        if new_head in self.shot_food:
+            return Landing(False, False, False, False, False, True, False, SHOT_FOOD_UNIT)
+        if new_head in self.stars:
+            return Landing(False, False, False, False, False, False, True, SHOT_FOOD_UNIT)
+        return None
 
     def _classify_landing(self, new_head, head_letter, target_digit):
         if new_head in self.tail_food:
             return self._tail_food_landing(new_head, head_letter)
-        if new_head in self.pickups:
-            return Landing(False, False, True, False, False, PICKUP_SCORE)
+        resource = self._resource_landing(new_head)
+        if resource is not None:
+            return resource
         if new_head not in self.food:
             return _NOTHING
         is_correct, is_wrong, reward = _food_landing(self.food[new_head], target_digit)
-        return Landing(is_correct, is_wrong, False, False, False, reward)
+        return Landing(is_correct, is_wrong, False, False, False, False, False, reward)
 
     def _clear_one_food_cell(self, new_head):
         new_food = dict(self.food)
@@ -208,27 +261,65 @@ class GameState:
             return self._clear_one_food_cell(new_head)
         return dict(self.food)
 
-    def _apply_landing(self, new_head, landing):
-        new_food = self._cleared_food(new_head, landing)
+    def _apply_resource_removal(self, new_head, landing):
+        """Drop the eaten 'X' / shot food / star from its list. Split
+        out of _apply_landing to keep it xenon-A."""
         new_pickups = list(self.pickups)
         if landing.is_pickup:
             new_pickups.remove(new_head)
+        new_shot_food = list(self.shot_food)
+        if landing.is_shot_food:
+            new_shot_food.remove(new_head)
+        new_stars = list(self.stars)
+        if landing.is_star:
+            new_stars.remove(new_head)
+        return new_pickups, new_shot_food, new_stars
+
+    def _apply_landing(self, new_head, landing):
+        new_food = self._cleared_food(new_head, landing)
+        new_pickups, new_shot_food, new_stars = self._apply_resource_removal(new_head, landing)
         new_tail_food = dict(self.tail_food)
         if landing.is_tail_food_mine or landing.is_tail_food_deny:
             new_tail_food.pop(new_head, None)
-        return new_food, new_pickups, new_tail_food
+        return new_food, new_pickups, new_shot_food, new_stars, new_tail_food
 
-    def _reward_for(self, landing, head_letter, new_head, my_multiplier, grows):
-        if self._in_blast_range(new_head):
-            return EXPLOSION_PENALTY  # v8: replaces, never stacks with the landing reward
+    def _invincible_reward(self, landing, head_letter, my_multiplier, grows):
+        if landing.is_wrong:
+            return 0.0  # v10: a wrong digit costs nothing while invincible
+        return self._scaled_reward(landing, head_letter, my_multiplier, grows)
+
+    def _scaled_reward(self, landing, head_letter, my_multiplier, grows):
         mult = my_multiplier if my_multiplier is not None else self.multipliers.get(head_letter, 1)
         return landing.reward * mult if grows else landing.reward
+
+    def _reward_for(self, landing, head_letter, new_head, my_multiplier, grows, invincible):
+        if invincible:
+            return self._invincible_reward(landing, head_letter, my_multiplier, grows)
+        if self._in_blast_range(new_head):
+            return EXPLOSION_PENALTY  # v8: replaces, never stacks with the landing reward
+        return self._scaled_reward(landing, head_letter, my_multiplier, grows)
 
     def _apply_multiplier(self, head_letter, is_pickup):
         new_multipliers = dict(self.multipliers)
         if is_pickup:
             new_multipliers[head_letter] = new_multipliers.get(head_letter, 1) + 1
         return new_multipliers
+
+    def _ticked_invincible(self, head_letter):
+        """One of `head_letter`'s own turns just passed (move, shoot, a
+        free stay/ram, ...) -- count it down, floored at 0."""
+        new_invincible = dict(self.invincible)
+        new_invincible[head_letter] = max(0, new_invincible.get(head_letter, 0) - 1)
+        return new_invincible
+
+    def _next_invincible(self, head_letter, landing):
+        """v10: eating a star resets the counter to the full 50 turns
+        regardless of what it was; anything else just ticks it down."""
+        if landing.is_star:
+            new_invincible = dict(self.invincible)
+            new_invincible[head_letter] = STAR_INVINCIBLE_TURNS
+            return new_invincible
+        return self._ticked_invincible(head_letter)
 
     def _crash(self, head_letter, other_letter, head):
         """Common consequence of running into a wall, the board edge,
@@ -246,6 +337,57 @@ class GameState:
             self.rows, self.cols, dict(self.heads), new_bodies, dict(self.food),
             list(self.pickups), dict(self.multipliers), self.remaining_moves,
             self.walls, new_tail_food, self.big_bombs, self.small_bombs,
+            list(self.stars), list(self.shot_food), self._ticked_invincible(head_letter),
+        )
+
+    def _free_stay(self, head_letter):
+        """v10: an invincible snake that would've crashed (edge / wall /
+        own body) just stays exactly where it was -- no penalty, no
+        shedding, no score change at all."""
+        return GameState(
+            self.rows, self.cols, dict(self.heads), dict(self.bodies),
+            dict(self.food), list(self.pickups), dict(self.multipliers),
+            self.remaining_moves, self.walls, dict(self.tail_food),
+            self.big_bombs, self.small_bombs, list(self.stars),
+            list(self.shot_food), self._ticked_invincible(head_letter),
+        )
+
+    def _cells_to_cut(self, victim_body, hit_cell):
+        """Split an (ordered neck->tail) body at `hit_cell`: everything
+        from there to the tail is cut; the rest, closer to the head, is
+        kept. Hitting the head itself (not in the body list) cuts the
+        whole body."""
+        if hit_cell not in victim_body:
+            return [], list(victim_body)
+        idx = victim_body.index(hit_cell)
+        return victim_body[:idx], victim_body[idx:]
+
+    def _shot_food_from_cut(self, cut_cells):
+        """v9: a cut cell becomes shot food, unless it falls inside a
+        bomb's blast square, in which case it just vanishes."""
+        return [pos for pos in cut_cells if not self._in_blast_range(pos)]
+
+    def _cut_victim(self, victim_letter, hit_cell):
+        """Shared by a successful shot and an invincible ram: truncate
+        the victim's body at `hit_cell` and turn the removed cells into
+        shot food (see _cells_to_cut / _shot_food_from_cut)."""
+        victim_body_letter = victim_letter.lower()
+        victim_body = self.bodies.get(victim_body_letter, [])
+        kept, cut_cells = self._cells_to_cut(victim_body, hit_cell)
+        new_bodies = dict(self.bodies)
+        new_bodies[victim_body_letter] = kept
+        new_shot_food = list(self.shot_food) + self._shot_food_from_cut(cut_cells)
+        return new_bodies, new_shot_food
+
+    def _ram_opponent(self, head_letter, other_letter, hit_cell):
+        """v10: an invincible snake moving into the opponent's body cuts
+        them for free (like a shot) and simply stays put itself."""
+        new_bodies, new_shot_food = self._cut_victim(other_letter, hit_cell)
+        return GameState(
+            self.rows, self.cols, dict(self.heads), new_bodies, dict(self.food),
+            list(self.pickups), dict(self.multipliers), self.remaining_moves,
+            self.walls, dict(self.tail_food), self.big_bombs, self.small_bombs,
+            list(self.stars), new_shot_food, self._ticked_invincible(head_letter),
         )
 
     def simulate(self, head_letter, other_letter, direction, my_multiplier=None):
@@ -255,34 +397,58 @@ class GameState:
 
         A crash (wall / board edge / own body / opponent, v7) is no
         longer fatal: the snake stays put and sheds its tail (see
-        _crash), and reward is the flat CRASH_PENALTY.
+        _crash), and reward is the flat CRASH_PENALTY -- unless this
+        side is invincible (v10), in which case it's entirely free (see
+        _free_stay / _ram_opponent).
         """
         head = self.heads.get(head_letter)
         if head is None:
             return None, 0.0
         new_head = _step(head, direction)
+        invincible = self._is_invincible(head_letter)
         if new_head in self.walls:
+            if invincible:
+                return self._free_stay(head_letter), 0.0
             return self._crash(head_letter, other_letter, head), CRASH_PENALTY
-        return self._advance(head_letter, other_letter, head, new_head, my_multiplier)
+        return self._advance(head_letter, other_letter, head, new_head, my_multiplier, invincible)
 
-    def _advance(self, head_letter, other_letter, head, new_head, my_multiplier):
+    def _grows(self, landing):
+        return (landing.is_correct or landing.is_tail_food_mine
+                or landing.is_shot_food or landing.is_star)
+
+    def _hits_opponent(self, new_head, other_head, other_body):
+        return new_head == other_head or new_head in other_body
+
+    def _advance(self, head_letter, other_letter, head, new_head, my_multiplier, invincible):
         body_letter = head_letter.lower()
         my_body = self.bodies.get(body_letter, [])
         other_body = self.bodies.get(other_letter.lower(), [])
         other_head = self.heads.get(other_letter)
         tail = tail_of(my_body)
 
+        if invincible and self._hits_opponent(new_head, other_head, other_body):
+            return self._ram_opponent(head_letter, other_letter, new_head), 0.0
+
         landing = self._classify_landing(new_head, head_letter, self.target_digit())
-        grows = landing.is_correct or landing.is_tail_food_mine
+        grows = self._grows(landing)
 
         if self._is_crash(new_head, my_body, other_body, other_head, tail, grows):
+            if invincible:
+                return self._free_stay(head_letter), 0.0
             return self._crash(head_letter, other_letter, head), CRASH_PENALTY
 
-        reward = self._reward_for(landing, head_letter, new_head, my_multiplier, grows)
+        return self._advance_result(head_letter, head, new_head, my_multiplier,
+                                     invincible, my_body, landing, grows)
+
+    def _advance_result(self, head_letter, head, new_head, my_multiplier,
+                         invincible, my_body, landing, grows):
+        body_letter = head_letter.lower()
+        reward = self._reward_for(landing, head_letter, new_head, my_multiplier, grows, invincible)
 
         new_bodies = dict(self.bodies)
         new_bodies[body_letter] = _advance_body(head, my_body, grows)
-        new_food, new_pickups, new_tail_food = self._apply_landing(new_head, landing)
+        new_food, new_pickups, new_shot_food, new_stars, new_tail_food = \
+            self._apply_landing(new_head, landing)
         new_multipliers = self._apply_multiplier(head_letter, landing.is_pickup)
         new_heads = dict(self.heads)
         new_heads[head_letter] = new_head
@@ -290,9 +456,46 @@ class GameState:
         new_state = GameState(
             self.rows, self.cols, new_heads, new_bodies, new_food,
             new_pickups, new_multipliers, self.remaining_moves, self.walls,
-            new_tail_food, self.big_bombs, self.small_bombs,
+            new_tail_food, self.big_bombs, self.small_bombs, new_stars,
+            new_shot_food, self._next_invincible(head_letter, landing),
         )
         return new_state, reward
+
+    def _shot_hit_cell(self, head, direction, other_letter):
+        """Walk the line of fire from `head` in `direction`: stop (miss,
+        None) at the board edge or a '#' wall, stop (hit) at the first
+        cell belonging to the opponent. Everything of our own -- body,
+        food, pickups, bombs, stars, shot food -- is passed straight
+        over."""
+        other_head = self.heads.get(other_letter)
+        other_body = set(self.bodies.get(other_letter.lower(), []))
+        dr, dc = DIRECTIONS[direction]
+        pos = (head[0] + dr, head[1] + dc)
+        while self.in_bounds(pos) and pos not in self.walls:
+            if pos == other_head or pos in other_body:
+                return pos
+            pos = (pos[0] + dr, pos[1] + dc)
+        return None
+
+    def simulate_shoot(self, head_letter, other_letter, direction):
+        """v9: shoot `direction` instead of moving. Always costs
+        SHOT_COST, hit or miss (affordability is the caller's job --
+        GameState doesn't track real cumulative score, see bot.py/
+        strategy.py). An invincible opponent can't be cut either way."""
+        head = self.heads.get(head_letter)
+        if head is None:
+            return None, 0.0
+        hit_cell = self._shot_hit_cell(head, direction, other_letter)
+        if hit_cell is None or self._is_invincible(other_letter):
+            return self._free_stay(head_letter), -SHOT_COST
+        new_bodies, new_shot_food = self._cut_victim(other_letter, hit_cell)
+        new_state = GameState(
+            self.rows, self.cols, dict(self.heads), new_bodies, dict(self.food),
+            list(self.pickups), dict(self.multipliers), self.remaining_moves,
+            self.walls, dict(self.tail_food), self.big_bombs, self.small_bombs,
+            list(self.stars), new_shot_food, self._ticked_invincible(head_letter),
+        )
+        return new_state, -SHOT_COST
 
     def legal_moves(self, head_letter, other_letter):
         """[(direction, new_state, reward), ...] for every direction this
@@ -301,6 +504,17 @@ class GameState:
         out = []
         for d in DIRECTIONS:
             new_state, reward = self.simulate(head_letter, other_letter, d)
+            if new_state is not None:
+                out.append((d, new_state, reward))
+        return out
+
+    def shoot_moves(self, head_letter, other_letter):
+        """[(direction, new_state, reward), ...] for every direction this
+        snake could shoot -- always 4 options; whether we can actually
+        afford SHOT_COST is checked by the caller, not here."""
+        out = []
+        for d in DIRECTIONS:
+            new_state, reward = self.simulate_shoot(head_letter, other_letter, d)
             if new_state is not None:
                 out.append((d, new_state, reward))
         return out

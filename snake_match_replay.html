@@ -26,6 +26,9 @@
     --food: #FFCB47;
     --accent: #7C8CFF;
     --danger: #FF5C7A;
+    --star: #FFE66D;
+    --shotfood: #B8F2A4;
+    --invincible-glow: rgba(255, 230, 109, .85);
     --digit-wrong: rgba(255, 92, 122, .5);
     --radius: 14px;
     --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -162,6 +165,8 @@
   .cell-tailfood-opp { fill: var(--opp); opacity: .35; stroke: var(--opp); stroke-width: 1.5; }
   .cell-bomb-big { fill: rgba(255,92,122,.28); stroke: var(--danger); stroke-width: 2; }
   .cell-bomb-small { fill: rgba(255,92,122,.22); stroke: var(--danger); stroke-width: 1.3; }
+  .cell-star { fill: var(--star); stroke: #fff; stroke-width: 1; }
+  .cell-shotfood { fill: var(--shotfood); opacity: .85; }
   .cell-blast { fill: rgba(255,92,122,.08); }
   .grid-line { stroke: rgba(255,255,255,.035); stroke-width: 1; }
 
@@ -409,6 +414,9 @@
           <div><span class="lg-swatch" style="background:var(--opp)"></span> Tail food del rival (choque previo)</div>
           <div><span class="lg-swatch" style="background:rgba(255,92,122,.45)"></span> Bomba 💣/🧨 (no hace falta pisarla)</div>
           <div><span class="lg-swatch" style="background:rgba(255,92,122,.12)"></span> Zona de explosión (5×5 / 3×3)</div>
+          <div><span class="lg-swatch" style="background:var(--shotfood)"></span> Comida de disparo * (come cualquiera)</div>
+          <div><span class="lg-swatch" style="background:var(--star)"></span> Estrella ⭐ (invencibilidad 50 turnos)</div>
+          <div><span class="lg-swatch" style="background:var(--star); box-shadow:0 0 6px 2px var(--invincible-glow)"></span> Cabeza/cuerpo invencible (dibujado al revés)</div>
         </div>
       </div>
 
@@ -555,6 +563,20 @@ function inBlastRange(r, c, bombs) {
   return bombs.small.some(b => chebyshev(r, c, b) <= SMALL_BOMB_RADIUS);
 }
 
+// v10: a star grants 50 turns of invincibility; while invincible, that
+// side's head/body case is drawn INVERTED (lowercase head, UPPERCASE
+// body). turn_data's invincible_1/invincible_2 map to player_1/
+// player_2 the same way multiplier_1/multiplier_2 already do elsewhere
+// in this file (player_1 == side 'A').
+const STAR_CHAR = '⭐';
+
+function invertedSidesFor(f) {
+  const inverted = new Set();
+  if ((f.invincible_1 || 0) > 0) inverted.add('A');
+  if ((f.invincible_2 || 0) > 0) inverted.add('B');
+  return inverted;
+}
+
 // ---------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------
@@ -626,6 +648,7 @@ function render() {
 
   const targetDigit = targetDigitFor(grid, rows, cols);
   const bombs = bombsFor(grid, rows, cols);
+  const inverted = invertedSidesFor(f);
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -634,7 +657,12 @@ function render() {
       const cx = x + cell / 2, cy = y + cell / 2;
 
       if (ch === '*') {
-        parts.push(`<circle cx="${cx}" cy="${cy}" r="${cell*0.22}" class="cell-food"/>`);
+        // v9: shot food, dropped by a shot or an invincible ram --
+        // either side may eat it, no longer the legacy "any food" '*'.
+        parts.push(`<circle cx="${cx}" cy="${cy}" r="${cell*0.22}" class="cell-shotfood"/>`);
+      } else if (ch === STAR_CHAR) {
+        parts.push(`<circle cx="${cx}" cy="${cy}" r="${cell*0.38}" class="cell-star" style="filter:drop-shadow(0 0 ${cell*0.3}px var(--invincible-glow))"/>`);
+        parts.push(`<text x="${cx}" y="${cy}" dy="0.34em" text-anchor="middle" font-size="${cell*0.42}">⭐</text>`);
       } else if (ch >= '1' && ch <= '9') {
         const isTarget = Number(ch) === targetDigit;
         const cls = isTarget ? 'cell-digit-target' : 'cell-digit-other';
@@ -661,14 +689,26 @@ function render() {
         const cls = owner === MY_SIDE ? 'cell-tailfood-me' : 'cell-tailfood-opp';
         parts.push(`<circle cx="${cx}" cy="${cy}" r="${cell*0.36}" class="${cls}"/>`);
         parts.push(`<text x="${cx}" y="${cy}" dy="0.32em" text-anchor="middle" font-size="${cell*0.4}" class="tailfood-label">${owner}</text>`);
-      } else if (ch === 'A' || ch === 'B') {
-        const cls = ch === MY_SIDE ? 'cell-me-head' : 'cell-opp-head';
-        const glow = (ch === MY_SIDE) ? 'var(--me-glow)' : 'var(--opp-glow)';
-        parts.push(`<rect x="${x+1}" y="${y+1}" width="${cell-2}" height="${cell-2}" rx="${cell*0.28}" class="${cls}" style="filter:drop-shadow(0 0 ${cell*0.35}px ${glow})"/>`);
-      } else if (ch === 'a' || ch === 'b') {
-        const isMine = (ch === 'a') === (MY_SIDE === 'A');
-        const cls = isMine ? 'cell-me-body' : 'cell-opp-body';
-        parts.push(`<rect x="${x+1.5}" y="${y+1.5}" width="${cell-3}" height="${cell-3}" rx="${cell*0.22}" class="${cls}"/>`);
+      } else if (ch === 'A' || ch === 'B' || ch === 'a' || ch === 'b') {
+        // v10: normally uppercase is a head, lowercase is body -- but
+        // while a side is invincible that's drawn INVERTED for just
+        // that side (see invertedSidesFor), so the letter's case alone
+        // isn't enough; flip the reading per side the same way
+        // snake/board.py's _classify_snake_char does.
+        const side = ch.toUpperCase();
+        const isInverted = inverted.has(side);
+        const isHeadChar = (ch === side) !== isInverted;
+        const isMine = side === MY_SIDE;
+        if (isHeadChar) {
+          const cls = isMine ? 'cell-me-head' : 'cell-opp-head';
+          const glow = isMine ? 'var(--me-glow)' : 'var(--opp-glow)';
+          const extraGlow = isInverted ? `, 0 0 ${cell*0.5}px var(--invincible-glow)` : '';
+          parts.push(`<rect x="${x+1}" y="${y+1}" width="${cell-2}" height="${cell-2}" rx="${cell*0.28}" class="${cls}" style="filter:drop-shadow(0 0 ${cell*0.35}px ${glow})${extraGlow}"/>`);
+        } else {
+          const cls = isMine ? 'cell-me-body' : 'cell-opp-body';
+          const outline = isInverted ? `stroke="var(--invincible-glow)" stroke-width="1.5"` : '';
+          parts.push(`<rect x="${x+1.5}" y="${y+1.5}" width="${cell-3}" height="${cell-3}" rx="${cell*0.22}" class="${cls}" ${outline}/>`);
+        }
       } else {
         // v8: tint an otherwise-empty cell that's still inside a blast
         // square, so it's visible *why* landing there would hurt even
@@ -703,6 +743,11 @@ function render() {
   const oppMult = MY_SIDE === 'A' ? f.multiplier_2 : f.multiplier_1;
   if (meMult != null || oppMult != null) {
     metaHtml += `<span class="meta-chip mult">multiplicador x<b>${meMult ?? 1}</b> nosotros · x<b>${oppMult ?? 1}</b> rival</span>`;
+  }
+  const meInv = MY_SIDE === 'A' ? f.invincible_1 : f.invincible_2;
+  const oppInv = MY_SIDE === 'A' ? f.invincible_2 : f.invincible_1;
+  if ((meInv || 0) > 0 || (oppInv || 0) > 0) {
+    metaHtml += `<span class="meta-chip" style="color:var(--star);border-color:rgba(255,230,109,.35)">invencible ${(meInv||0) > 0 ? `nosotros (${meInv})` : ''}${(meInv||0) > 0 && (oppInv||0) > 0 ? ' · ' : ''}${(oppInv||0) > 0 ? `rival (${oppInv})` : ''}</span>`;
   }
   el('turnMeta').innerHTML = metaHtml;
 
